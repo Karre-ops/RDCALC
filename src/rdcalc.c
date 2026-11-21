@@ -552,16 +552,17 @@ static void cas_help(void)
 {
     static const char *l[] = {
         "Type a command or use the CAS buttons:",
-        "simplify(expr)   expand(expr)   factor(expr)",
-        "diff(expr[,x])   integrate(expr[,x[,a,b]])",
-        "solve(equation[,x])   subst(expr,x,value)",
-        "approx(expr)   i = sqrt(-1)",
-        "expand((x+1)^2)   solve(x^2+1=0,x) -> i",
-        "simplify((1+i)^2) -> 2*i   approx(1/(1+i))",
-        "Matrix: [1,2;3,4]  det(A)  inv(A)  trans(A)",
-        "A*B, A+B, 2*A, A^2.  Exact fractions, pi and e."
+        "simplify  expand  factor (also whole numbers)",
+        "diff(expr[,x])  integrate(expr[,x[,a,b]])  limit(expr,x,a)",
+        "solve(eq[,x])  zeros(expr[,x])  nsolve(eq,x,start)  subst",
+        "taylor(expr,x,a,n)  sum/prod(expr,x,a,b)  approx",
+        "Matrix: [1,2;3,4]  det  inv  trans  rref  rank  lsolve(A,b)",
+        "charpoly(A[,x])  dot(u,v)  cross(u,v)  i = sqrt(-1)",
+        "ilaplace(expr[,s[,t]])   inverse Laplace transform",
+        "gcd  lcm  mod  ncr  npr  fac(n)  n!   deg  coeff(expr,x,n)",
+        "Example: ilaplace(1/(s^2+2s+5)) -> exp(-t)*sin(2*t)/2"
     };
-    ui_msgbox("Algebra (CAS)", l, 9, "OK", NULL);
+    ui_msgbox("Algebra (CAS)", l, 10, "OK", NULL);
 }
 
 static void press(int i)

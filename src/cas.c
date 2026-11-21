@@ -61,6 +61,9 @@ static char cas_err[80];
 static int cas_deg = 1;
 static double cas_ans;
 
+static int cas_ok(int node);
+static void setout(char *out, int outsz, const char *s);
+
 static void seterr(const char *s)
 {
     strncpy(cas_err, s, sizeof cas_err - 1);
@@ -446,6 +449,32 @@ static int mat_mul(int x, int y)
     return mkmat(A->rows, B->cols, el);
 }
 
+/* Determinante durch Entwicklung nach der ersten Zeile (kleine Matrizen,
+ * bleibt bei Symbolen ohne Brueche) */
+static int det_rec(int *a, int n, int ld)
+{
+    int i, j, c, s, r, sign = 1, sub[MAXME], k;
+    if (n == 1) return a[0];
+    if (n == 2)
+        return simp(mkadd(mkmul(a[0], a[ld + 1]),
+                          mkmul(mknum(num_int(-1)), mkmul(a[1], a[ld]))));
+    s = mknum(num_int(0));
+    for (c = 0; c < n; c++) {
+        k = 0;
+        for (i = 1; i < n; i++)
+            for (j = 0; j < n; j++)
+                if (j != c) sub[k++] = a[i * ld + j];
+        r = det_rec(sub, n - 1, n - 1);
+        if (r == NIL) return NIL;
+        r = simp(mkmul(a[c], r));
+        if (r == NIL) return NIL;
+        s = simp(mkadd(s, sign > 0 ? r : mkmul(mknum(num_int(-1)), r)));
+        if (s == NIL) return NIL;
+        sign = -sign;
+    }
+    return s;
+}
+
 /* Determinante mit Gauss-Elimination, exakt und auch mit i oder Symbolen */
 static int mat_det(int m)
 {
@@ -453,6 +482,13 @@ static int mat_det(int m)
     int a[MAXME], t, f, det;
     int n = A->rows, i, j, k, piv, neg = 0;
     if (A->rows != A->cols) { seterr("det needs a square matrix."); return NIL; }
+    if (n <= 4) {
+        for (i = 0; i < n * n; i++) {
+            a[i] = simp(A->e[i]);
+            if (a[i] == NIL) return NIL;
+        }
+        return simp(expand(det_rec(a, n, n)));
+    }
     for (i = 0; i < n * n; i++) a[i] = A->e[i];
     det = mknum(num_int(1));
     for (k = 0; k < n; k++) {
@@ -877,6 +913,7 @@ static void rnd_mul(int n)
     if (rpos) cf = num_abs(cf);
     if (num_neg(cf)) { rch('-'); cf = num_negv(cf); }
     cf = num_abs(cf);
+    rpos = 0;                       /* Vorzeichen des Summanden ist abgehandelt */
 
     if (cf.real) {
         if (fabs(cf.r - 1.0) > 1e-12) { rnd_num(cf); first = 0; }
@@ -900,6 +937,11 @@ static void rnd_mul(int n)
         int p = denf[i];
         Num e = num_abs(numof(pool[p].b));
         if (!first) rch('*');
+        if (!e.real && e.d == 2 && e.n == 1) {          /* Wurzel im Nenner */
+            rput("sqrt("); rnd(pool[p].a, 0); rch(')');
+            first = 0;
+            continue;
+        }
         if (plevel(pool[p].a) < 2) { rch('('); rnd(pool[p].a, 0); rch(')'); }
         else rnd(pool[p].a, 3);
         if (!(e.d == 1 && e.n == 1)) {
@@ -916,6 +958,13 @@ static void rnd_pow(int n)
 {
     int a = pool[n].a, b = pool[n].b;
     Num e;
+    rpos = 0;
+    if (isnum(b) && num_one(numof(b))) {        /* ^1 nicht schreiben */
+        if (pool[a].op == OP_NUM) rnd(a, 0);
+        else if (plevel(a) < 2) { rch('('); rnd(a, 0); rch(')'); }
+        else rnd(a, 3);
+        return;
+    }
     if (isnum(b)) {
         e = numof(b);
         if (!e.real && e.d == 2 && e.n == 1) {
@@ -960,6 +1009,7 @@ static void rnd(int n, int lvl)
     case OP_MAT: {
         Mat *A = &mats[pool[n].fn];
         int r, c;
+        rpos = 0;
         rch('[');
         for (r = 0; r < A->rows; r++) {
             if (r) rch(';');
@@ -974,6 +1024,7 @@ static void rnd(int n, int lvl)
     case OP_FUN:
         rput(fnames[pool[n].fn - 1]);
         rch('(');
+        rpos = 0;
         rnd(pool[n].a, 0);
         rch(')');
         break;
@@ -981,6 +1032,7 @@ static void rnd(int n, int lvl)
     case OP_MUL: rnd_mul(n); break;
     case OP_ADD: rnd_add(n); break;
     case OP_EQ:
+        rpos = 0;
         rnd(pool[n].a, 0); rput(" = "); rnd(pool[n].b, 0);
         break;
     }
@@ -1316,10 +1368,21 @@ static int simp_mul(int n)
     return r;
 }
 
+/* sin(u)^2 bzw. cos(u)^2 erkennen */
+static int trig_sq(int n, int f, int *u)
+{
+    long k;
+    if (n == NIL || pool[n].op != OP_POW) return 0;
+    if (!isnum(pool[n].b) || !num_isint(numof(pool[n].b), &k) || k != 2) return 0;
+    if (pool[pool[n].a].op != OP_FUN || pool[pool[n].a].fn != f) return 0;
+    *u = pool[pool[n].a].a;
+    return 1;
+}
+
 static int simp_add(int n)
 {
     int f[MAXF], nf = 0, i, j, nr = 0, rest[MAXF], terms[MAXF], nt = 0, t;
-    Num cf[MAXF], c;
+    Num cf[MAXF], c, extra;
     flatrec(n, OP_ADD, f, &nf, MAXF);
     for (i = 0; i < nf; i++) {
         f[i] = simp(f[i]);
@@ -1334,6 +1397,23 @@ static int simp_add(int n)
             rest[nr] = t; cf[nr] = c; nr++;
         }
     }
+    /* sin(u)^2 + cos(u)^2 = 1 (gleicher Koeffizient) */
+    extra = num_int(0);
+    for (j = 0; j < nr; j++) {
+        int u1, u2;
+        if (num_zero(cf[j]) || rest[j] == NIL) continue;
+        if (!trig_sq(rest[j], F_SIN, &u1)) continue;
+        for (i = 0; i < nr; i++) {
+            if (i == j || num_zero(cf[i]) || rest[i] == NIL) continue;
+            if (trig_sq(rest[i], F_COS, &u2) && eq(u1, u2) &&
+                num_cmp(cf[j], cf[i]) == 0) {
+                extra = num_add(extra, cf[j]);
+                cf[j] = num_int(0);
+                cf[i] = num_int(0);
+                break;
+            }
+        }
+    }
     for (j = 0; j < nr; j++) {
         if (num_zero(cf[j])) continue;
         if (rest[j] == NIL) t = mknum(cf[j]);
@@ -1341,6 +1421,7 @@ static int simp_add(int n)
         if (t == NIL) return NIL;
         terms[nt++] = t;
     }
+    if (!num_zero(extra)) terms[nt++] = mknum(extra);
     if (!nt) return mknum(num_int(0));
     for (i = 1; i < nt; i++) {
         int v = terms[i];
@@ -1993,15 +2074,52 @@ static int factor_squares(int n)
     return simp(mkmul(l, r));
 }
 
+/* Ganze Zahl in Primfaktoren zerlegen: 360 -> 2^3*3^2*5 */
+static int factor_int_node(long v)
+{
+    int fac[16], nf = 0, r, i;
+    long p, e, n = v;
+    if (n < 0) { fac[nf++] = mknum(num_int(-1)); n = -n; }
+    for (p = 2; p <= n / p && nf < 14; p += (p == 2 ? 1 : 2)) {
+        e = 0;
+        while (n % p == 0) { n /= p; e++; }
+        if (e) {                               /* p^e als Knoten, nicht als Zahl */
+            int pw = newnode(OP_POW);
+            if (pw == NIL) return NIL;
+            pool[pw].a = (short)mknum(num_int(p));
+            pool[pw].b = (short)mknum(num_int(e));
+            fac[nf++] = pw;
+        }
+    }
+    if (n > 1) {
+        int pw = newnode(OP_POW);
+        if (pw == NIL) return NIL;
+        pool[pw].a = (short)mknum(num_int(n));
+        pool[pw].b = (short)mknum(num_int(1));
+        fac[nf++] = pw;
+    }
+    r = fac[0];                            /* MUL direkt bauen: Zahlen nicht zusammenrechnen */
+    for (i = 1; i < nf; i++) {
+        int t = newnode(OP_MUL);
+        if (t == NIL) return NIL;
+        pool[t].a = (short)r;
+        pool[t].b = (short)fac[i];
+        r = t;
+    }
+    return r;
+}
+
 static int factor_expr(int e)
 {
     int s, f, deg, i, nvar, k, r, fac[16], nf = 0;
     char vc = 0, v;
     Num c[MAXDEG + 1], content, root;
-    long ic[MAXDEG + 1], g = 0, L;
+    long ic[MAXDEG + 1], g = 0, L, iv;
 
     s = simp(expand(e));
     if (s == NIL || cas_err[0]) return NIL;
+    if (isnum(s) && num_isint(numof(s), &iv) && (iv > 1 || iv < -1))
+        return factor_int_node(iv);
 
     f = factor_squares(s);
     if (f != s) {
@@ -2103,9 +2221,52 @@ static int quad_roots(Num *c, int *roots, int *nr)
     return 1;
 }
 
+/* Lineare Form a*v+b mit beliebigen (symbolischen) Koeffizienten */
+static int lin_sym(int n, char v, int *a, int *b)
+{
+    int f[MAXF], nf = 0, i, dep = -1, A = NIL, a1, b1, a2, b2;
+    long k;
+    if (n == NIL) return 0;
+    if (!hasvar(n, v)) { *a = mknum(num_int(0)); *b = n; return 1; }
+    if (pool[n].op == OP_VAR) {
+        if (pool[n].fn != (unsigned char)v) return 0;
+        *a = mknum(num_int(1));
+        *b = mknum(num_int(0));
+        return 1;
+    }
+    if (pool[n].op == OP_ADD) {
+        if (!lin_sym(pool[n].a, v, &a1, &b1)) return 0;
+        if (!lin_sym(pool[n].b, v, &a2, &b2)) return 0;
+        if (!iszero(a1) && !iszero(a2)) return 0;
+        *a = mkadd(a1, a2);
+        *b = mkadd(b1, b2);
+        return 1;
+    }
+    if (pool[n].op == OP_MUL) {
+        flatrec(n, OP_MUL, f, &nf, MAXF);
+        for (i = 0; i < nf; i++) {
+            if (hasvar(f[i], v)) {
+                if (dep >= 0) return 0;
+                dep = i;
+            } else {
+                A = (A == NIL) ? f[i] : mkmul(A, f[i]);
+            }
+        }
+        if (dep < 0) return 0;
+        if (!lin_sym(f[dep], v, &a1, &b1)) return 0;
+        *a = (A == NIL) ? a1 : mkmul(A, a1);
+        *b = (A == NIL) ? b1 : mkmul(A, b1);
+        return 1;
+    }
+    if (pool[n].op == OP_POW && isnum(pool[n].b) &&
+        num_isint(numof(pool[n].b), &k) && k == 1)
+        return lin_sym(pool[n].a, v, a, b);
+    return 0;
+}
+
 static int solve_cmd(int node, char v, char *out, int outsz)
 {
-    int e, roots[MAXDEG + 2], nr = 0, i, j, deg;
+    int e, roots[MAXDEG + 2], nr = 0, i, j, deg, A, B;
     Num c[MAXDEG + 1], root;
     char line[1024], tmp[120];
 
@@ -2120,6 +2281,21 @@ static int solve_cmd(int node, char v, char *out, int outsz)
     e = simp(expand(e));
     if (e == NIL || cas_err[0]) { strncpy(out, cas_err, outsz - 1); out[outsz - 1] = 0; return -1; }
     if (!getpoly(e, v, c, &deg)) {
+        int sol;
+        if (lin_sym(e, v, &A, &B)) {          /* a*x+b=0 -> x = -b/a */
+            if (iszero(A)) {
+                if (iszero(B)) sprintf(out, "true for all %c", v);
+                else strcpy(out, "no solution");
+                return 1;
+            }
+            sol = simp(mkmul(mknum(num_int(-1)),
+                             mkmul(B, mkpow(A, mknum(num_int(-1))))));
+            if (cas_ok(sol)) {
+                render_to(sol, tmp, sizeof tmp);
+                sprintf(out, "%c = %s", v, tmp);
+                return 1;
+            }
+        }
         strncpy(out, "Coefficients must be numeric.", outsz - 1);
         out[outsz - 1] = 0;
         return -1;
@@ -2182,6 +2358,620 @@ static int solve_cmd(int node, char v, char *out, int outsz)
     }
     strncpy(out, line, outsz - 1);
     out[outsz - 1] = 0;
+    return 1;
+}
+
+/* ---------------- Erweiterte Befehle ---------------- */
+
+/* Ganzzahl aus einem Knoten; 0 = keine ganze Zahl */
+static int int_of(int node, long *v)
+{
+    if (!cas_ok(node)) return 0;
+    node = simp(node);
+    if (!isnum(node)) return 0;
+    return num_isint(numof(node), v);
+}
+
+/* Reduzierte Zeilenstufenform (Gauss-Jordan), exakt und mit Symbolen */
+static int mat_rref(int m)
+{
+    Mat *A = &mats[pool[m].fn];
+    int a[MAXME], el[MAXME], t, f, d, x;
+    int n = A->rows, c = A->cols, i, j, row, lead, piv;
+    for (i = 0; i < n * c; i++) {
+        a[i] = simp(A->e[i]);
+        if (a[i] == NIL) return NIL;
+    }
+    row = 0;
+    for (lead = 0; lead < c && row < n; lead++) {
+        piv = -1;
+        for (i = row; i < n; i++) if (!iszero(a[i * c + lead])) { piv = i; break; }
+        if (piv < 0) continue;
+        if (piv != row)
+            for (j = 0; j < c; j++) {
+                t = a[row * c + j]; a[row * c + j] = a[piv * c + j]; a[piv * c + j] = t;
+            }
+        x = a[row * c + lead];
+        if (!isone(x)) {
+            d = simp(mkpow(x, mknum(num_int(-1))));
+            if (d == NIL) return NIL;
+            for (j = 0; j < c; j++) {
+                a[row * c + j] = simp(mkmul(a[row * c + j], d));
+                if (a[row * c + j] == NIL) return NIL;
+            }
+        }
+        for (i = 0; i < n; i++) {
+            if (i == row) continue;
+            f = a[i * c + lead];
+            if (iszero(f)) continue;
+            for (j = 0; j < c; j++) {
+                a[i * c + j] = simp(mkadd(a[i * c + j],
+                    mkmul(mknum(num_int(-1)), mkmul(f, a[row * c + j]))));
+                if (a[i * c + j] == NIL) return NIL;
+            }
+        }
+        row++;
+    }
+    for (i = 0; i < n * c; i++) el[i] = a[i];
+    return mkmat(n, c, el);
+}
+
+static int mat_rank(int m)
+{
+    int r = mat_rref(m), i, j, k = 0;
+    Mat *R;
+    if (r == NIL) return NIL;
+    R = &mats[pool[r].fn];
+    for (i = 0; i < R->rows; i++) {
+        for (j = 0; j < R->cols; j++) if (!iszero(R->e[i * R->cols + j])) break;
+        if (j < R->cols) k++;
+    }
+    return mknum(num_int(k));
+}
+
+/* Lineares Gleichungssystem A*x = b loesen */
+static int mat_lsolve(int x, int y)
+{
+    Mat *A = &mats[pool[x].fn], *B = &mats[pool[y].fn];
+    int el[MAXME], i, inv, r;
+    if (A->rows != A->cols) { seterr("lsolve needs a square matrix."); return NIL; }
+    if (B->rows == 1 && B->cols == A->rows) {      /* Zeilenvektor als Spalte */
+        for (i = 0; i < B->cols; i++) el[i] = B->e[i];
+        y = mkmat(B->cols, 1, el);
+        if (y == NIL) return NIL;
+        B = &mats[pool[y].fn];
+    }
+    if (B->rows != A->rows || B->cols != 1) {
+        seterr("lsolve needs matrix and vector.");
+        return NIL;
+    }
+    inv = mat_inv(x);
+    if (inv == NIL) return NIL;
+    r = mat_mul(inv, y);
+    if (r == NIL) return NIL;
+    return mat_simp(r);
+}
+
+/* Charakteristisches Polynom det(A - x*I) */
+static int mat_charpoly(int m, char v)
+{
+    Mat *A = &mats[pool[m].fn];
+    int el[MAXME], i, j, r, n = A->rows;
+    if (A->rows != A->cols) { seterr("charpoly needs a square matrix."); return NIL; }
+    for (i = 0; i < n; i++)
+        for (j = 0; j < n; j++) {
+            if (i == j)
+                el[i * n + j] = mkadd(A->e[i * n + j],
+                                      mkmul(mknum(num_int(-1)), mkvar(v)));
+            else
+                el[i * n + j] = A->e[i * n + j];
+            if (el[i * n + j] == NIL) return NIL;
+        }
+    r = mkmat(n, n, el);
+    if (r == NIL) return NIL;
+    r = mat_det(r);
+    if (r == NIL) return NIL;
+    return simp(expand(r));
+}
+
+/* n! exakt bis 12! */
+static int mkfact(int n)
+{
+    long r = 1, i;
+    if (n < 0) { seterr("fact needs a whole number >= 0."); return NIL; }
+    if (n > 12) { seterr("fact is exact only up to 12!."); return NIL; }
+    for (i = 2; i <= n; i++) r *= i;
+    return mknum(num_int(r));
+}
+
+/* Taylor-Reihe bis zur Ordnung n um x = a */
+static int taylor_cmd(int f, char v, int at, long n, char *out, int outsz)
+{
+    int d, k, term, sum, pw, xm;
+    Num co;
+    long i;
+    if (n < 0 || n > 8) { setout(out, outsz, "taylor needs order 0..8."); return -1; }
+    xm = mkadd(mkvar(v), mkmul(mknum(num_int(-1)), at));     /* x - a */
+    sum = mknum(num_int(0));
+    co = num_int(1);
+    d = f;
+    for (i = 0; i <= n; i++) {
+        if (i > 0) {
+            d = deriv(d, v);
+            if (d == NIL) { setout(out, outsz, "Cannot differentiate that."); return -1; }
+            co = num_div(co, num_int(i));
+        }
+        term = simp(subst(d, v, at));
+        if (!cas_ok(term)) {
+            setout(out, outsz, cas_err[0] ? cas_err : "Syntax error.");
+            return -1;
+        }
+        term = simp(mkmul(mknum(co), term));
+        pw = mkpow(xm, mknum(num_int(i)));
+        if (term == NIL || pw == NIL) break;
+        k = simp(mkmul(term, pw));
+        if (k == NIL) break;
+        sum = simp(mkadd(sum, k));
+        if (!cas_ok(sum)) break;
+    }
+    sum = simp(expand(sum));
+    if (!cas_ok(sum)) {
+        setout(out, outsz, cas_err[0] ? cas_err : "Syntax error.");
+        return -1;
+    }
+    render_to(sum, out, outsz);
+    return 1;
+}
+
+/* Ausdruck in Zaehler und Nenner zerlegen (fuer l'Hospital) */
+static void split_frac(int n, int *num, int *den)
+{
+    int f[MAXF], nf = 0, i;
+    long k;
+    *num = mknum(num_int(1));
+    *den = mknum(num_int(1));
+    if (pool[n].op == OP_MUL) flatrec(n, OP_MUL, f, &nf, MAXF);
+    else { f[0] = n; nf = 1; }
+    for (i = 0; i < nf; i++) {
+        int b = f[i];
+        if (pool[b].op == OP_POW && isnum(pool[b].b) &&
+            num_isint(numof(pool[b].b), &k) && k < 0) {
+            *den = mkmul(*den, mkpow(pool[b].a, mknum(num_int(-k))));
+            continue;
+        }
+        *num = mkmul(*num, b);
+    }
+}
+
+/* Grenzwert an einer endlichen Stelle; 0/0 mit l'Hospital */
+static int limit_cmd(int node, char v, int at, char *out, int outsz)
+{
+    int L, num, den, nv, dv, i;
+    L = simp(subst(node, v, at));
+    if (cas_ok(L) && !hasvar(L, v)) {
+        render_to(L, out, outsz);
+        return 1;
+    }
+    cas_err[0] = 0;
+    split_frac(simp(node), &num, &den);
+    for (i = 0; i < 4; i++) {
+        nv = simp(subst(num, v, at));
+        dv = simp(subst(den, v, at));
+        if (!cas_ok(nv) || !cas_ok(dv) || hasvar(nv, v) || hasvar(dv, v)) {
+            cas_err[0] = 0;
+        } else if (!iszero(dv)) {
+            L = simp(mkmul(nv, mkpow(dv, mknum(num_int(-1)))));
+            if (cas_ok(L)) { render_to(L, out, outsz); return 1; }
+            break;
+        } else if (!iszero(nv)) {
+            break;                            /* Zaehler endlich, Nenner 0 */
+        }
+        cas_err[0] = 0;
+        num = deriv(num, v);
+        den = deriv(den, v);
+        if (num == NIL || den == NIL) break;
+    }
+    setout(out, outsz, "No finite limit found.");
+    return -1;
+}
+
+/* Numerisch loesen mit dem Newton-Verfahren */
+static int nsolve_cmd(int eq, char v, double x0, char *out, int outsz)
+{
+    int f, df;
+    double x = x0, fx, dfx, x1;
+    int i;
+    if (pool[eq].op == OP_EQ)
+        f = simp(expand(mkadd(pool[eq].a, mkmul(mknum(num_int(-1)), pool[eq].b))));
+    else
+        f = simp(expand(eq));
+    if (!cas_ok(f)) { setout(out, outsz, cas_err[0] ? cas_err : "Syntax error."); return -1; }
+    df = simp(deriv(f, v));
+    if (df == NIL) { setout(out, outsz, "Cannot differentiate that."); return -1; }
+    for (i = 0; i < 40; i++) {
+        if (!evaln(f, v, x, &fx) || !evaln(df, v, x, &dfx)) {
+            setout(out, outsz, cas_err[0] ? cas_err : "Cannot evaluate.");
+            return -1;
+        }
+        if (fabs(dfx) < 1e-14) { setout(out, outsz, "Derivative is zero."); return -1; }
+        x1 = x - fx / dfx;
+        if (fabs(x1 - x) < 1e-10) { x = x1; break; }
+        x = x1;
+        if (fabs(x) > 1e12) { setout(out, outsz, "No convergence."); return -1; }
+    }
+    if (fabs(x) < 1e-12) x = 0.0;
+    sprintf(out, "%c = %.10g", v, x);
+    return 1;
+}
+
+/* Summe bzw. Produkt ueber einen ganzzahligen Bereich */
+static int sumprod(int e, char v, long a, long b, int isprod, char *out, int outsz)
+{
+    int acc, t;
+    long k;
+    if (b < a) { setout(out, outsz, "Upper bound below lower bound."); return -1; }
+    if (b - a > 40) { setout(out, outsz, "Too many terms (max 41)."); return -1; }
+    acc = mknum(num_int(isprod ? 1 : 0));
+    for (k = a; k <= b; k++) {
+        t = simp(subst(e, v, mknum(num_int(k))));
+        if (!cas_ok(t)) {
+            setout(out, outsz, cas_err[0] ? cas_err : "Syntax error.");
+            return -1;
+        }
+        acc = simp(isprod ? mkmul(acc, t) : mkadd(acc, t));
+        if (!cas_ok(acc)) {
+            setout(out, outsz, cas_err[0] ? cas_err : "Expression too complex.");
+            return -1;
+        }
+    }
+    render_to(acc, out, outsz);
+    return 1;
+}
+
+/* Vektoren: Laenge, Element, Skalar- und Kreuzprodukt */
+static int veclen(int m)
+{
+    Mat *A = &mats[pool[m].fn];
+    if (A->rows == 1) return A->cols;
+    if (A->cols == 1) return A->rows;
+    return 0;
+}
+
+static int vecel(int m, int i)
+{
+    Mat *A = &mats[pool[m].fn];
+    return A->rows == 1 ? A->e[i] : A->e[i * A->cols];
+}
+
+static int mat_dot(int x, int y)
+{
+    int n = veclen(x), i, s;
+    if (n < 1 || n != veclen(y)) {
+        seterr("dot needs two vectors of equal length.");
+        return NIL;
+    }
+    s = mknum(num_int(0));
+    for (i = 0; i < n; i++) {
+        s = simp(mkadd(s, mkmul(vecel(x, i), vecel(y, i))));
+        if (s == NIL) return NIL;
+    }
+    return s;
+}
+
+static int mat_cross(int x, int y)
+{
+    int el[3], a1, a2, a3, b1, b2, b3;
+    if (veclen(x) != 3 || veclen(y) != 3) {
+        seterr("cross needs two 3-vectors.");
+        return NIL;
+    }
+    a1 = vecel(x, 0); a2 = vecel(x, 1); a3 = vecel(x, 2);
+    b1 = vecel(y, 0); b2 = vecel(y, 1); b3 = vecel(y, 2);
+    el[0] = simp(mkadd(mkmul(a2, b3), mkmul(mknum(num_int(-1)), mkmul(a3, b2))));
+    el[1] = simp(mkadd(mkmul(a3, b1), mkmul(mknum(num_int(-1)), mkmul(a1, b3))));
+    el[2] = simp(mkadd(mkmul(a1, b2), mkmul(mknum(num_int(-1)), mkmul(a2, b1))));
+    if (el[0] == NIL || el[1] == NIL || el[2] == NIL) return NIL;
+    return mkmat(3, 1, el);
+}
+
+/* Zahlentheorie auf ganzen Zahlen */
+static int mk_gcd(long a, long b)
+{
+    if (!a && !b) return mknum(num_int(0));
+    return mknum(num_int(lgcd(a, b)));
+}
+
+static int mk_lcm(long a, long b)
+{
+    long g, r;
+    if (!a || !b) return mknum(num_int(0));
+    if (a < 0) a = -a;
+    if (b < 0) b = -b;
+    g = lgcd(a, b);
+    if (!lmulck(a / g, b, &r)) { seterr("Number too large."); return NIL; }
+    return mknum(num_int(r));
+}
+
+static int mk_mod(long a, long b)
+{
+    long r;
+    if (!b) { seterr("Division by 0."); return NIL; }
+    r = a % b;
+    if (r && ((r < 0) != (b < 0))) r += b;
+    return mknum(num_int(r));
+}
+
+static int mk_ncr(long n, long k)
+{
+    long r = 1, i;
+    if (n < 0 || k < 0 || k > n) { seterr("ncr needs 0 <= k <= n."); return NIL; }
+    if (k > n - k) k = n - k;
+    for (i = 1; i <= k; i++) {
+        if (!lmulck(r, n - k + i, &r)) { seterr("Number too large."); return NIL; }
+        r /= i;
+    }
+    return mknum(num_int(r));
+}
+
+static int mk_npr(long n, long k)
+{
+    long r = 1, i;
+    if (n < 0 || k < 0 || k > n) { seterr("npr needs 0 <= k <= n."); return NIL; }
+    for (i = 0; i < k; i++)
+        if (!lmulck(r, n - i, &r)) { seterr("Number too large."); return NIL; }
+    return mknum(num_int(r));
+}
+
+/* ---------------- Inverse Laplace-Transformation ---------------- */
+
+#define ILN (MAXDEG + 2)
+
+static void ptrim(Num *c, int *d)
+{
+    while (*d > 0 && num_zero(c[*d])) (*d)--;
+}
+
+static void pmul(const Num *a, int da, const Num *b, int db, Num *c, int *dc)
+{
+    int i, j;
+    for (i = 0; i <= da + db; i++) c[i] = num_int(0);
+    for (i = 0; i <= da; i++)
+        for (j = 0; j <= db; j++)
+            c[i + j] = num_add(c[i + j], num_mul(a[i], b[j]));
+    *dc = da + db;
+    ptrim(c, dc);
+}
+
+static void pcopy(Num *d, const Num *s, int n)
+{
+    int i;
+    for (i = 0; i <= n; i++) d[i] = s[i];
+}
+
+/* Produkt aller Linearfaktoren (s-a)^m, einer davon optional mit anderem Grad */
+static void basis_poly(Num *roots, int *mult, int nr, int skip, int skipExp,
+                       const Num *q, int qd, Num *out, int *od)
+{
+    Num fac[MAXDEG + 1], lin[2];
+    int i, e, d;
+    out[0] = num_int(1);
+    *od = 0;
+    for (i = 0; i < nr; i++) {
+        int cnt = (i == skip) ? skipExp : mult[i];
+        for (e = 0; e < cnt; e++) {
+            lin[0] = num_negv(roots[i]);
+            lin[1] = num_int(1);
+            pmul(out, *od, lin, 1, fac, &d);
+            pcopy(out, fac, d);
+            *od = d;
+        }
+    }
+    if (qd >= 0) {
+        pmul(out, *od, q, qd, fac, &d);
+        pcopy(out, fac, d);
+        *od = d;
+    }
+}
+
+/* Lineares Gleichungssystem exakt loesen (Gauss-Jordan) */
+static int psolve(int n, Num m[][ILN + 1], Num *x)
+{
+    int i, j, k, piv;
+    Num t, f;
+    for (k = 0; k < n; k++) {
+        piv = -1;
+        for (i = k; i < n; i++) if (!num_zero(m[i][k])) { piv = i; break; }
+        if (piv < 0) return 0;
+        if (piv != k)
+            for (j = 0; j <= n; j++) { t = m[k][j]; m[k][j] = m[piv][j]; m[piv][j] = t; }
+        for (i = 0; i < n; i++) {
+            if (i == k || num_zero(m[i][k])) continue;
+            f = num_div(m[i][k], m[k][k]);
+            for (j = k; j <= n; j++) m[i][j] = num_sub(m[i][j], num_mul(f, m[k][j]));
+        }
+    }
+    for (i = 0; i < n; i++) {
+        if (num_zero(m[i][i])) return 0;
+        x[i] = num_div(m[i][n], m[i][i]);
+    }
+    return 1;
+}
+
+/* Ausdruck als Zaehler und Nenner in s */
+static int to_ratio(int n, char v, int *nu, int *de)
+{
+    int f[MAXF], nf = 0, i, a, b;
+    long k;
+    if (n == NIL) return 0;
+    if (!hasvar(n, v)) { *nu = n; *de = mknum(num_int(1)); return 1; }
+    switch (pool[n].op) {
+    case OP_VAR:
+    case OP_ADD:                        /* Summe steht im Zaehler */
+        *nu = n;
+        *de = mknum(num_int(1));
+        return 1;
+    case OP_MUL:
+        flatrec(n, OP_MUL, f, &nf, MAXF);
+        *nu = mknum(num_int(1));
+        *de = mknum(num_int(1));
+        for (i = 0; i < nf; i++) {
+            if (!to_ratio(f[i], v, &a, &b)) return 0;
+            *nu = mkmul(*nu, a);
+            *de = mkmul(*de, b);
+            if (*nu == NIL || *de == NIL) return 0;
+        }
+        return 1;
+    case OP_POW:
+        if (!isnum(pool[n].b) || !num_isint(numof(pool[n].b), &k)) return 0;
+        if (k >= 0) { *nu = n; *de = mknum(num_int(1)); return 1; }
+        *nu = mknum(num_int(1));
+        *de = mkpow(pool[n].a, mknum(num_int(-k)));
+        return *de != NIL;
+    }
+    return 0;
+}
+
+/* Ruecktransformation eines Summanden c(s)/d(s) */
+static int il_term(int term, char sv, char tv, int *acc)
+{
+    Num num[MAXDEG + 1], den[MAXDEG + 1], roots[ILN], qq[3];
+    Num m[ILN][ILN + 1], x[ILN];
+    int mult[ILN], nr = 0, dn, dd, i, k, u, nunk, irr = 0;
+    int nu, de;
+    Num root, A;
+
+    if (!to_ratio(term, sv, &nu, &de)) { seterr("ilaplace: form not supported."); return NIL; }
+    nu = simp(expand(nu));
+    de = simp(expand(de));
+    if (nu == NIL || de == NIL) return NIL;
+    if (!getpoly(nu, sv, num, &dn) || !getpoly(de, sv, den, &dd)) {
+        seterr("ilaplace: coefficients must be numeric.");
+        return NIL;
+    }
+    ptrim(num, &dn);
+    ptrim(den, &dd);
+    if (dd < 1) { seterr("ilaplace: s must be in the denominator."); return NIL; }
+    if (dn >= dd) { seterr("ilaplace: polynomial part (delta) not supported."); return NIL; }
+
+    while (dd > 0) {                     /* Nenner in Linearfaktoren zerlegen */
+        if (!find_rat_root(den, dd, &root)) break;
+        for (i = 0; i < nr; i++) if (num_cmp(roots[i], root) == 0) break;
+        if (i == nr) { roots[nr] = root; mult[nr] = 1; nr++; }
+        else mult[i]++;
+        deflate(den, dd, root);
+        dd--;
+        ptrim(den, &dd);
+    }
+    if (dd == 2) { irr = 1; qq[0] = den[0]; qq[1] = den[1]; qq[2] = den[2]; }
+    else if (dd != 0) { seterr("ilaplace: denominator does not factor."); return NIL; }
+
+    nunk = irr ? 2 : 0;
+    for (i = 0; i < nr; i++) nunk += mult[i];
+    if (nunk < 1 || nunk > ILN) { seterr("ilaplace: denominator too large."); return NIL; }
+
+    for (i = 0; i < ILN; i++)
+        for (k = 0; k <= ILN; k++) m[i][k] = num_int(0);
+    u = 0;
+    for (i = 0; i < nr; i++)
+        for (k = 1; k <= mult[i]; k++) {
+            Num basis[MAXDEG + 1];
+            int db, j;
+            basis_poly(roots, mult, nr, i, mult[i] - k, qq, irr ? 2 : -1, basis, &db);
+            for (j = 0; j <= db; j++) m[j][u] = basis[j];
+            u++;
+        }
+    if (irr) {                           /* quadratischer Rest: B0 + B1*s */
+        Num basis[MAXDEG + 1];
+        int db, j;
+        basis_poly(roots, mult, nr, -1, 0, qq, -1, basis, &db);
+        for (j = 0; j <= db; j++) m[j][u] = basis[j];
+        for (j = 0; j <= db; j++) m[j + 1][u + 1] = basis[j];
+    }
+    for (i = 0; i < nunk; i++) m[i][nunk] = num[i];
+
+    if (!psolve(nunk, m, x)) { seterr("ilaplace: no partial fractions found."); return NIL; }
+
+    *acc = mknum(num_int(0));
+    u = 0;
+    for (i = 0; i < nr; i++)
+        for (k = 1; k <= mult[i]; k++) {
+            long fct = 1, e2;
+            Num co;
+            A = x[u++];
+            if (num_zero(A)) continue;
+            for (e2 = 2; e2 <= k - 1; e2++) fct *= e2;
+            co = num_div(A, num_int(fct));
+            *acc = simp(mkadd(*acc, simp(mkmul(mknum(co),
+                mkmul(mkpow(mkvar(tv), mknum(num_int(k - 1))),
+                      mkfun(F_EXP, mkmul(mknum(roots[i]), mkvar(tv))))))));
+            if (*acc == NIL) return NIL;
+        }
+    if (irr) {
+        Num B0 = x[u], B1 = x[u + 1];
+        Num p = num_div(qq[1], qq[2]);
+        Num q0 = num_div(qq[0], qq[2]);
+        Num h = num_div(p, num_int(2));
+        Num w2 = num_sub(q0, num_mul(h, h));
+        Num c0 = num_sub(B0, num_mul(B1, h));
+        int ex = mkfun(F_EXP, mkmul(mknum(num_negv(h)), mkvar(tv)));
+        int X = NIL, Y = NIL;
+        if (num_zero(w2)) {                          /* (s+h)^2 */
+            X = ex;
+            Y = simp(mkmul(mkvar(tv), ex));
+        } else if (!num_neg(w2)) {                   /* (s+h)^2 + w^2 */
+            int w = sqrt_num_node(w2);
+            int arg = mkmul(w, mkvar(tv));
+            X = simp(mkmul(ex, mkfun(F_COS, arg)));
+            Y = simp(mkmul(ex, mkmul(mkfun(F_SIN, arg), mkpow(w, mknum(num_int(-1))))));
+        } else {                                     /* (s+h)^2 - u^2, u irrational */
+            int uu = sqrt_num_node(num_negv(w2));
+            int arg = mkmul(uu, mkvar(tv));
+            int e1 = mkfun(F_EXP, arg);
+            int e2 = mkfun(F_EXP, mkmul(mknum(num_int(-1)), arg));
+            X = simp(mkmul(ex, mkmul(mknum(num_rat(1, 2)), mkadd(e1, e2))));
+            Y = simp(mkmul(ex, mkmul(mknum(num_rat(1, 2)),
+                     mkadd(e1, mkmul(mknum(num_int(-1)), e2)))));
+            Y = simp(mkmul(Y, mkpow(uu, mknum(num_int(-1)))));
+        }
+        if (X == NIL || Y == NIL) return NIL;
+        if (!num_zero(B1))
+            *acc = simp(mkadd(*acc, simp(mkmul(mknum(B1), X))));
+        if (!num_zero(c0))
+            *acc = simp(mkadd(*acc, simp(mkmul(mknum(c0), Y))));
+        if (*acc == NIL) return NIL;
+    }
+    return *acc;
+}
+
+static int ilaplace_cmd(int node, char sv, char tv, char *out, int outsz)
+{
+    int f[MAXF], nf = 0, i, acc, t, r;
+    node = simp(expand(node));
+    if (!cas_ok(node)) {
+        setout(out, outsz, cas_err[0] ? cas_err : "Syntax error.");
+        return -1;
+    }
+    if (pool[node].op == OP_ADD) flatrec(node, OP_ADD, f, &nf, MAXF);
+    else { f[0] = node; nf = 1; }
+    acc = mknum(num_int(0));
+    for (i = 0; i < nf; i++) {
+        r = il_term(f[i], sv, tv, &t);
+        if (r == NIL) {
+            setout(out, outsz, cas_err[0] ? cas_err : "Cannot transform that.");
+            return -1;
+        }
+        acc = simp(mkadd(acc, t));
+        if (!cas_ok(acc)) {
+            setout(out, outsz, cas_err[0] ? cas_err : "Expression too complex.");
+            return -1;
+        }
+    }
+    acc = simp(expand(acc));
+    if (!cas_ok(acc)) {
+        setout(out, outsz, cas_err[0] ? cas_err : "Expression too complex.");
+        return -1;
+    }
+    render_to(acc, out, outsz);
     return 1;
 }
 
@@ -2362,8 +3152,20 @@ static int parse_unary(P *p)
 static int parse_pow(P *p)
 {
     int a, b;
+    long k;
     a = parse_prim(p);
     if (a == NIL) return NIL;
+    for (;;) {                              /* 5! */
+        pskip(p);
+        if (*p->s != '!') break;
+        p->s++;
+        if (!isnum(a) || !num_isint(numof(a), &k)) {
+            seterr("! needs a whole number.");
+            return NIL;
+        }
+        a = mkfact((int)k);
+        if (a == NIL) return NIL;
+    }
     pskip(p);
     if (*p->s == '^') {
         p->s++;
@@ -2536,9 +3338,11 @@ int cas_eval(const char *in, char *out, int outsz, double ansv)
 {
     char work[220], name[24], args[4][200], inside[200];
     const char *lp, *rp, *q;
-    int cmd = 0, nargs, i, n, node, node2;
+    int cmd = 0, nargs, i, n, node, node2, deg;
     char var, tmp[220];
     double dv;
+    Num c[MAXDEG + 1];
+    long iv, ord;
 
     cas_ans = ansv;
     cas_err[0] = 0;
@@ -2563,9 +3367,30 @@ int cas_eval(const char *in, char *out, int outsz, double ansv)
         else if (!strcmp(name, "solve")) cmd = 6;
         else if (!strcmp(name, "subst") || !strcmp(name, "substitute")) cmd = 7;
         else if (!strcmp(name, "approx") || !strcmp(name, "evalf")) cmd = 8;
+        else if (!strcmp(name, "rref")) cmd = 10;
+        else if (!strcmp(name, "rank")) cmd = 11;
+        else if (!strcmp(name, "lsolve")) cmd = 12;
+        else if (!strcmp(name, "charpoly")) cmd = 13;
+        else if (!strcmp(name, "taylor") || !strcmp(name, "series")) cmd = 14;
+        else if (!strcmp(name, "limit")) cmd = 15;
+        else if (!strcmp(name, "nsolve")) cmd = 16;
+        else if (!strcmp(name, "zeros")) cmd = 17;
+        else if (!strcmp(name, "deg")) cmd = 18;
+        else if (!strcmp(name, "coeff") || !strcmp(name, "coef")) cmd = 19;
+        else if (!strcmp(name, "gcd")) cmd = 20;
+        else if (!strcmp(name, "lcm")) cmd = 21;
+        else if (!strcmp(name, "mod")) cmd = 22;
+        else if (!strcmp(name, "ncr")) cmd = 23;
+        else if (!strcmp(name, "npr")) cmd = 24;
+        else if (!strcmp(name, "fac")) cmd = 25;
+        else if (!strcmp(name, "sum")) cmd = 26;
+        else if (!strcmp(name, "prod")) cmd = 27;
+        else if (!strcmp(name, "dot")) cmd = 28;
+        else if (!strcmp(name, "cross")) cmd = 29;
+        else if (!strcmp(name, "ilaplace") || !strcmp(name, "invlaplace")) cmd = 30;
     }
     if (!cmd) {                  /* Matrixliterale, det/inv/trans und i direkt rechnen */
-        if (strchr(work, '[') || has_i_unit(work)) cmd = 9;
+        if (strchr(work, '[') || strchr(work, '!') || has_i_unit(work)) cmd = 9;
         else return 0;
     }
     if (cmd == 9) {
@@ -2704,6 +3529,188 @@ int cas_eval(const char *in, char *out, int outsz, double ansv)
         }
         setout(out, outsz, cas_err[0] ? cas_err : "Contains variables.");
         return -1;
+    case 10:                                    /* rref(A) */
+    case 11:                                    /* rank(A) */
+        if (nargs != 1) { setout(out, outsz, "rref/rank need a matrix."); return -1; }
+        node = parse_full(args[0], 0);
+        if (!cas_ok(node)) break;
+        node = simp(node);
+        if (!cas_ok(node)) break;
+        if (pool[node].op != OP_MAT) { setout(out, outsz, "rref/rank need a matrix."); return -1; }
+        node = (cmd == 10) ? mat_rref(node) : mat_rank(node);
+        if (!cas_ok(node)) break;
+        render_to(node, out, outsz);
+        return 1;
+    case 12:                                    /* lsolve(A,b) */
+        if (nargs != 2) { setout(out, outsz, "lsolve needs matrix and vector."); return -1; }
+        node = parse_full(args[0], 0);
+        if (!cas_ok(node)) break;
+        node2 = parse_full(args[1], 0);
+        if (!cas_ok(node2)) break;
+        node = simp(node);
+        node2 = simp(node2);
+        if (!cas_ok(node) || !cas_ok(node2)) break;
+        if (pool[node].op != OP_MAT || pool[node2].op != OP_MAT) {
+            setout(out, outsz, "lsolve needs matrix and vector.");
+            return -1;
+        }
+        node = mat_lsolve(node, node2);
+        if (!cas_ok(node)) break;
+        render_to(node, out, outsz);
+        return 1;
+    case 13:                                    /* charpoly(A[,x]) */
+        if (nargs < 1 || nargs > 2) { setout(out, outsz, "charpoly needs matrix[,x]."); return -1; }
+        if (!argvar(args, 1, nargs, &var)) { setout(out, outsz, "Variable must be one letter."); return -1; }
+        node = parse_full(args[0], 0);
+        if (!cas_ok(node)) break;
+        node = simp(node);
+        if (!cas_ok(node)) break;
+        if (pool[node].op != OP_MAT) { setout(out, outsz, "charpoly needs a matrix."); return -1; }
+        node = mat_charpoly(node, var);
+        if (!cas_ok(node)) break;
+        render_to(node, out, outsz);
+        return 1;
+    case 14:                                    /* taylor(expr,x,a,n) */
+        if (nargs != 4) { setout(out, outsz, "taylor needs expr,x,a,n."); return -1; }
+        if (!argvar(args, 1, nargs, &var)) { setout(out, outsz, "Variable must be one letter."); return -1; }
+        node = parse_full(args[0], 0);
+        if (!cas_ok(node)) break;
+        node2 = parse_full(args[2], 0);
+        if (!cas_ok(node2)) break;
+        {
+            int on = parse_full(args[3], 0);
+            if (!int_of(on, &iv)) { setout(out, outsz, "Order must be a whole number."); return -1; }
+        }
+        return taylor_cmd(node, var, node2, iv, out, outsz);
+    case 15:                                    /* limit(expr,x,a) */
+        if (nargs != 3) { setout(out, outsz, "limit needs expr,x,a."); return -1; }
+        if (!argvar(args, 1, nargs, &var)) { setout(out, outsz, "Variable must be one letter."); return -1; }
+        node = parse_full(args[0], 0);
+        if (!cas_ok(node)) break;
+        node2 = parse_full(args[2], 0);
+        if (!cas_ok(node2)) break;
+        return limit_cmd(node, var, node2, out, outsz);
+    case 16:                                    /* nsolve(eq,x,start) */
+        if (nargs != 3) { setout(out, outsz, "nsolve needs equation,x,start."); return -1; }
+        if (!argvar(args, 1, nargs, &var)) { setout(out, outsz, "Variable must be one letter."); return -1; }
+        node = parse_full(args[0], 1);
+        if (!cas_ok(node)) break;
+        node2 = parse_full(args[2], 0);
+        if (!cas_ok(node2)) break;
+        if (!evaln(node2, 0, 0.0, &dv)) { setout(out, outsz, "Start value must be a number."); return -1; }
+        return nsolve_cmd(node, var, dv, out, outsz);
+    case 17:                                    /* zeros(expr[,x]) */
+        if (nargs < 1 || nargs > 2) { setout(out, outsz, "zeros needs expr[,x]."); return -1; }
+        if (!argvar(args, 1, nargs, &var)) { setout(out, outsz, "Variable must be one letter."); return -1; }
+        node = parse_full(args[0], 1);
+        if (!cas_ok(node)) break;
+        return solve_cmd(node, var, out, outsz);
+    case 18:                                    /* deg(expr[,x]) */
+        if (nargs < 1 || nargs > 2) { setout(out, outsz, "deg needs expr[,x]."); return -1; }
+        if (!argvar(args, 1, nargs, &var)) { setout(out, outsz, "Variable must be one letter."); return -1; }
+        node = parse_full(args[0], 0);
+        if (!cas_ok(node)) break;
+        node = simp(expand(node));
+        if (!cas_ok(node)) break;
+        if (!getpoly(node, var, c, &deg)) {
+            setout(out, outsz, "Not a polynomial in that variable.");
+            return -1;
+        }
+        poly_trim(c, &deg);
+        sprintf(tmp, "%d", deg);
+        setout(out, outsz, tmp);
+        return 1;
+    case 19:                                    /* coeff(expr,x,n) */
+        if (nargs != 3) { setout(out, outsz, "coeff needs expr,x,n."); return -1; }
+        if (!argvar(args, 1, nargs, &var)) { setout(out, outsz, "Variable must be one letter."); return -1; }
+        node = parse_full(args[0], 0);
+        if (!cas_ok(node)) break;
+        node2 = parse_full(args[2], 0);
+        if (!int_of(node2, &iv) || iv < 0 || iv > MAXDEG) {
+            setout(out, outsz, "Coefficient index 0..8.");
+            return -1;
+        }
+        node = simp(expand(node));
+        if (!cas_ok(node)) break;
+        if (!getpoly(node, var, c, &deg)) {
+            setout(out, outsz, "Not a polynomial in that variable.");
+            return -1;
+        }
+        node = mknum(c[iv]);
+        if (node == NIL) break;
+        render_to(node, out, outsz);
+        return 1;
+    case 20: case 21: case 22: case 23: case 24:   /* gcd lcm mod ncr npr */
+        if (nargs != 2) { setout(out, outsz, "This command needs two whole numbers."); return -1; }
+        node = parse_full(args[0], 0);
+        node2 = parse_full(args[1], 0);
+        if (!int_of(node, &iv) || !int_of(node2, &ord)) {
+            setout(out, outsz, "This command needs two whole numbers.");
+            return -1;
+        }
+        if (cmd == 20) node = mk_gcd(iv, ord);
+        else if (cmd == 21) node = mk_lcm(iv, ord);
+        else if (cmd == 22) node = mk_mod(iv, ord);
+        else if (cmd == 23) node = mk_ncr(iv, ord);
+        else node = mk_npr(iv, ord);
+        if (!cas_ok(node)) break;
+        render_to(node, out, outsz);
+        return 1;
+    case 25:                                    /* fac(n) */
+        if (nargs != 1) { setout(out, outsz, "fac needs one whole number."); return -1; }
+        node = parse_full(args[0], 0);
+        if (!int_of(node, &iv)) { setout(out, outsz, "fac needs a whole number."); return -1; }
+        node = mkfact((int)iv);
+        if (!cas_ok(node)) break;
+        render_to(node, out, outsz);
+        return 1;
+    case 26: case 27:                           /* sum/prod(expr,x,a,b) */
+        if (nargs != 4) { setout(out, outsz, "sum/prod needs expr,x,a,b."); return -1; }
+        if (!argvar(args, 1, nargs, &var)) { setout(out, outsz, "Variable must be one letter."); return -1; }
+        node = parse_full(args[0], 0);
+        if (!cas_ok(node)) break;
+        node2 = parse_full(args[2], 0);
+        if (!int_of(node2, &iv)) { setout(out, outsz, "Lower bound must be a whole number."); return -1; }
+        {
+            int hi = parse_full(args[3], 0);
+            if (!int_of(hi, &ord)) { setout(out, outsz, "Upper bound must be a whole number."); return -1; }
+        }
+        node = simp(expand(node));
+        if (!cas_ok(node)) break;
+        return sumprod(node, var, iv, ord, cmd == 27, out, outsz);
+    case 28: case 29:                           /* dot/cross */
+        if (nargs != 2) { setout(out, outsz, "dot/cross needs two vectors."); return -1; }
+        node = parse_full(args[0], 0);
+        if (!cas_ok(node)) break;
+        node2 = parse_full(args[1], 0);
+        if (!cas_ok(node2)) break;
+        node = simp(node);
+        node2 = simp(node2);
+        if (!cas_ok(node) || !cas_ok(node2)) break;
+        if (pool[node].op != OP_MAT || pool[node2].op != OP_MAT) {
+            setout(out, outsz, "dot/cross needs two vectors.");
+            return -1;
+        }
+        node = (cmd == 28) ? mat_dot(node, node2) : mat_cross(node, node2);
+        if (!cas_ok(node)) break;
+        render_to(node, out, outsz);
+        return 1;
+    case 30:                                    /* ilaplace(expr[,s[,t]]) */
+        if (nargs < 1 || nargs > 3) { setout(out, outsz, "ilaplace needs expr[,s[,t]]."); return -1; }
+        {
+            char sv2 = 's', tv2 = 't';
+            if (nargs >= 2 && !argvar(args, 1, nargs, &sv2)) {
+                setout(out, outsz, "Variable must be one letter.");
+                return -1;
+            }
+            if (nargs >= 3 && !argvar(args, 2, nargs, &tv2)) {
+                setout(out, outsz, "Variable must be one letter.");
+                return -1;
+            }
+            node = parse_full(args[0], 0);
+            if (!cas_ok(node)) break;
+            return ilaplace_cmd(node, sv2, tv2, out, outsz);
+        }
     }
 
     if (cas_err[0]) setout(out, outsz, cas_err);
