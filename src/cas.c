@@ -8,6 +8,10 @@
  *          integrate(expr[,x[,a,b]]), solve(gleichung[,x]),
  *          subst(expr,x,wert), approx(expr)
  *
+ * Komplex: i ist eine Konstante mit i^2 = -1. Quadratische Gleichungen mit
+ * negativer Diskriminante liefern komplexe Loesungen.
+ * Matrizen: [1,2;3,4], Rechnen mit +, -, *, ^ sowie det(), inv(), trans().
+ *
  * Reines C ohne DOS-Abhaengigkeit; der Kern laesst sich auf dem PC testen.
  */
 #include <stdio.h>
@@ -21,15 +25,20 @@
 #define MAXN    1600            /* Knoten je Befehl */
 #define MAXF    64              /* Summanden/Faktoren je Knoten */
 #define MAXDEG  8
+#define MAXM    16              /* Matrizen je Befehl */
+#define MAXME   36              /* Elemente je Matrix (6x6) */
+#define MAXDIM  6               /* Zeilen/Spalten je Matrix */
 #define PI      3.14159265358979323846
 
-enum { OP_NUM, OP_VAR, OP_CONST, OP_FUN, OP_POW, OP_MUL, OP_ADD, OP_EQ };
-enum { K_PI = 1, K_E };
-enum { F_SIN = 1, F_COS, F_TAN, F_ASIN, F_ACOS, F_ATAN, F_LN, F_LOG, F_EXP, F_ABS };
-#define NFUN 10
+enum { OP_NUM, OP_VAR, OP_CONST, OP_FUN, OP_POW, OP_MUL, OP_ADD, OP_EQ, OP_MAT };
+enum { K_PI = 1, K_E, K_I };
+enum { F_SIN = 1, F_COS, F_TAN, F_ASIN, F_ACOS, F_ATAN, F_LN, F_LOG, F_EXP, F_ABS,
+       F_DET, F_INV, F_TRANS };
+#define NFUN 13
 
 static const char *fnames[NFUN] = {
-    "sin", "cos", "tan", "asin", "acos", "atan", "ln", "log", "exp", "abs"
+    "sin", "cos", "tan", "asin", "acos", "atan", "ln", "log", "exp", "abs",
+    "det", "inv", "trans"
 };
 
 typedef struct {
@@ -42,8 +51,12 @@ typedef struct {
 
 typedef struct { int real; long n, d; double r; } Num;
 
+typedef struct { int rows, cols; int e[MAXME]; } Mat;   /* Elemente als Knoten */
+
 static Node pool[MAXN];
 static int ntop;
+static Mat mats[MAXM];
+static int nmats;
 static char cas_err[80];
 static int cas_deg = 1;
 static double cas_ans;
@@ -284,6 +297,24 @@ static int mkeq(int a, int b)
     return i;
 }
 
+/* Matrix aus Zeilen x Spalten mit Elementknoten */
+static int mkmat(int rows, int cols, int *el)
+{
+    int i, m, n;
+    if (rows < 1 || cols < 1 || rows > MAXDIM || cols > MAXDIM ||
+        rows * cols > MAXME) { seterr("Matrix too large."); return NIL; }
+    if (nmats >= MAXM) { seterr("Too many matrices."); return NIL; }
+    m = nmats++;
+    mats[m].rows = rows;
+    mats[m].cols = cols;
+    n = rows * cols;
+    for (i = 0; i < n; i++) mats[m].e[i] = el[i];
+    i = newnode(OP_MAT);
+    if (i == NIL) return NIL;
+    pool[i].fn = (unsigned char)m;
+    return i;
+}
+
 static int isnum(int n) { return n != NIL && pool[n].op == OP_NUM; }
 static int iszero(int n)
 {
@@ -304,10 +335,37 @@ static Num numof(int n)
     return num_rat(pool[n].n, pool[n].d);
 }
 
+static int mat_add(int x, int y);
+static int mat_mul(int x, int y);
+static int mat_scal(int m, int s, int left);
+static int mat_pow(int m, long k);
+static int mat_det(int m);
+static int mat_inv(int m);
+static int mat_trans(int m);
+static int mkpow(int a, int b);
+static int simp(int n);
+static int expand(int n);
+
+/* det/inv/trans liefern erst nach dem Vereinfachen eine Matrix */
+static int matfun(int n)
+{
+    return pool[n].op == OP_FUN &&
+           (pool[n].fn == F_DET || pool[n].fn == F_INV || pool[n].fn == F_TRANS);
+}
+
 static int mkadd(int x, int y)
 {
     int i;
     if (x == NIL || y == NIL) return NIL;
+    if (pool[x].op == OP_MAT || pool[y].op == OP_MAT) {
+        if (!matfun(x) && !matfun(y)) {         /* det/inv/trans: erst vereinfachen */
+            if (pool[x].op != OP_MAT || pool[y].op != OP_MAT) {
+                seterr("Matrix and number do not add.");
+                return NIL;
+            }
+            return mat_add(x, y);
+        }
+    }
     if (isnum(x) && isnum(y)) return mknum(num_add(numof(x), numof(y)));
     if (iszero(x)) return y;
     if (iszero(y)) return x;
@@ -322,6 +380,9 @@ static int mkmul(int x, int y)
     int i;
     if (x == NIL || y == NIL) return NIL;
     if (isnum(x) && isnum(y)) return mknum(num_mul(numof(x), numof(y)));
+    if (pool[x].op == OP_MAT && pool[y].op == OP_MAT) return mat_mul(x, y);
+    if (pool[x].op == OP_MAT && !matfun(y)) return mat_scal(x, y, 0);
+    if (pool[y].op == OP_MAT && !matfun(x)) return mat_scal(y, x, 1);
     if (iszero(x) || iszero(y)) return mknum(num_int(0));
     if (isone(x)) return y;
     if (isone(y)) return x;
@@ -331,12 +392,215 @@ static int mkmul(int x, int y)
     return i;
 }
 
+/* ---------------- Matrizen ---------------- */
+
+static void flatrec(int n, int op, int *out, int *cnt, int max);
+
+static int mat_add(int x, int y)
+{
+    Mat *A = &mats[pool[x].fn], *B = &mats[pool[y].fn];
+    int el[MAXME], i, n;
+    if (A->rows != B->rows || A->cols != B->cols) {
+        seterr("Matrix sizes differ.");
+        return NIL;
+    }
+    n = A->rows * A->cols;
+    for (i = 0; i < n; i++) {
+        el[i] = mkadd(A->e[i], B->e[i]);
+        if (el[i] == NIL) return NIL;
+    }
+    return mkmat(A->rows, A->cols, el);
+}
+
+static int mat_scal(int m, int s, int left)
+{
+    Mat *A = &mats[pool[m].fn];
+    int el[MAXME], i, n = A->rows * A->cols;
+    for (i = 0; i < n; i++) {
+        el[i] = left ? mkmul(s, A->e[i]) : mkmul(A->e[i], s);
+        if (el[i] == NIL) return NIL;
+    }
+    return mkmat(A->rows, A->cols, el);
+}
+
+static int mat_mul(int x, int y)
+{
+    Mat *A = &mats[pool[x].fn], *B = &mats[pool[y].fn];
+    int el[MAXME], i, j, k, t, s;
+    if (A->cols != B->rows) {
+        seterr("Matrix sizes do not match for *.");
+        return NIL;
+    }
+    if (A->rows * B->cols > MAXME) { seterr("Matrix too large."); return NIL; }
+    for (i = 0; i < A->rows; i++)
+        for (j = 0; j < B->cols; j++) {
+            s = mknum(num_int(0));
+            for (k = 0; k < A->cols; k++) {
+                t = mkmul(A->e[i * A->cols + k], B->e[k * B->cols + j]);
+                if (t == NIL) return NIL;
+                s = mkadd(s, t);
+                if (s == NIL) return NIL;
+            }
+            el[i * B->cols + j] = s;
+        }
+    return mkmat(A->rows, B->cols, el);
+}
+
+/* Determinante mit Gauss-Elimination, exakt und auch mit i oder Symbolen */
+static int mat_det(int m)
+{
+    Mat *A = &mats[pool[m].fn];
+    int a[MAXME], t, f, det;
+    int n = A->rows, i, j, k, piv, neg = 0;
+    if (A->rows != A->cols) { seterr("det needs a square matrix."); return NIL; }
+    for (i = 0; i < n * n; i++) a[i] = A->e[i];
+    det = mknum(num_int(1));
+    for (k = 0; k < n; k++) {
+        piv = -1;
+        for (i = k; i < n; i++) if (!iszero(a[i * n + k])) { piv = i; break; }
+        if (piv < 0) return mknum(num_int(0));
+        if (piv != k) {
+            for (j = 0; j < n; j++) {
+                t = a[k * n + j]; a[k * n + j] = a[piv * n + j]; a[piv * n + j] = t;
+            }
+            neg = !neg;
+        }
+        det = simp(mkmul(det, a[k * n + k]));
+        if (det == NIL) return NIL;
+        for (i = k + 1; i < n; i++) {
+            if (iszero(a[i * n + k])) continue;
+            f = simp(mkmul(a[i * n + k], mkpow(a[k * n + k], mknum(num_int(-1)))));
+            if (f == NIL) return NIL;
+            for (j = k; j < n; j++) {
+                a[i * n + j] = simp(mkadd(a[i * n + j],
+                    mkmul(mknum(num_int(-1)), mkmul(f, a[k * n + j]))));
+                if (a[i * n + j] == NIL) return NIL;
+            }
+        }
+    }
+    if (neg) det = simp(mkmul(mknum(num_int(-1)), det));
+    return simp(expand(det));       /* ausmultiplizieren: x*(x-1/x) -> x^2-1 */
+}
+
+/* Inverse mit Gauss-Jordan, exakt und auch mit i oder Symbolen */
+static int mat_inv(int m)
+{
+    Mat *A = &mats[pool[m].fn];
+    int a[MAXME], b[MAXME], t, f, d, el[MAXME];
+    int n = A->rows, i, j, k, piv;
+    if (A->rows != A->cols) { seterr("inv needs a square matrix."); return NIL; }
+    for (i = 0; i < n * n; i++) {
+        a[i] = A->e[i];
+        b[i] = mknum(num_int(i % (n + 1) == 0 ? 1 : 0));
+    }
+    for (k = 0; k < n; k++) {
+        piv = -1;
+        for (i = k; i < n; i++) if (!iszero(a[i * n + k])) { piv = i; break; }
+        if (piv < 0) { seterr("Matrix is singular."); return NIL; }
+        if (piv != k) {
+            for (j = 0; j < n; j++) {
+                t = a[k * n + j]; a[k * n + j] = a[piv * n + j]; a[piv * n + j] = t;
+                t = b[k * n + j]; b[k * n + j] = b[piv * n + j]; b[piv * n + j] = t;
+            }
+        }
+        d = simp(mkpow(a[k * n + k], mknum(num_int(-1))));
+        if (d == NIL) return NIL;
+        for (j = 0; j < n; j++) {
+            a[k * n + j] = simp(mkmul(a[k * n + j], d));
+            b[k * n + j] = simp(mkmul(b[k * n + j], d));
+            if (a[k * n + j] == NIL || b[k * n + j] == NIL) return NIL;
+        }
+        for (i = 0; i < n; i++) {
+            if (i == k || iszero(a[i * n + k])) continue;
+            f = a[i * n + k];
+            for (j = 0; j < n; j++) {
+                a[i * n + j] = simp(mkadd(a[i * n + j],
+                    mkmul(mknum(num_int(-1)), mkmul(f, a[k * n + j]))));
+                b[i * n + j] = simp(mkadd(b[i * n + j],
+                    mkmul(mknum(num_int(-1)), mkmul(f, b[k * n + j]))));
+                if (a[i * n + j] == NIL || b[i * n + j] == NIL) return NIL;
+            }
+        }
+    }
+    for (i = 0; i < n * n; i++) el[i] = b[i];
+    return mkmat(n, n, el);
+}
+
+static int mat_trans(int m)
+{
+    Mat *A = &mats[pool[m].fn];
+    int el[MAXME], r, c, k = 0;
+    for (c = 0; c < A->cols; c++)
+        for (r = 0; r < A->rows; r++)
+            el[k++] = A->e[r * A->cols + c];
+    return mkmat(A->cols, A->rows, el);
+}
+
+static int mat_pow(int m, long k)
+{
+    Mat *A = &mats[pool[m].fn];
+    int el[MAXME], i, n = A->rows * A->cols, r;
+    if (A->rows != A->cols) { seterr("Matrix power needs a square matrix."); return NIL; }
+    if (k < 0) {
+        r = mat_inv(m);
+        if (r == NIL) return NIL;
+        return mat_pow(r, -k);
+    }
+    for (i = 0; i < n; i++) el[i] = mknum(num_int(i % (A->rows + 1) == 0 ? 1 : 0));
+    r = mkmat(A->rows, A->cols, el);
+    for (i = 0; i < k; i++) {
+        r = mat_mul(r, m);
+        if (r == NIL) return NIL;
+    }
+    return r;
+}
+
+/* Komplexe Zahl als a + b*i zerlegen (nur exakte Zahlen); 1 = erkannt */
+static int cplx_split(int n, Num *re, Num *im)
+{
+    int f[MAXF], nf = 0, i, got = 0;
+    Num c = num_int(1), r1, i1, r2, i2;
+    if (isnum(n)) { *re = numof(n); *im = num_int(0); return 1; }
+    if (pool[n].op == OP_CONST && pool[n].fn == K_I) {
+        *re = num_int(0); *im = num_int(1); return 1;
+    }
+    if (pool[n].op == OP_MUL) {
+        flatrec(n, OP_MUL, f, &nf, MAXF);
+        for (i = 0; i < nf; i++) {
+            if (isnum(f[i])) { c = num_mul(c, numof(f[i])); continue; }
+            if (pool[f[i]].op == OP_CONST && pool[f[i]].fn == K_I && !got) { got = 1; continue; }
+            return 0;
+        }
+        if (!got) return 0;
+        *re = num_int(0); *im = c; return 1;
+    }
+    if (pool[n].op == OP_ADD) {
+        if (!cplx_split(pool[n].a, &r1, &i1)) return 0;
+        if (!cplx_split(pool[n].b, &r2, &i2)) return 0;
+        *re = num_add(r1, r2); *im = num_add(i1, i2); return 1;
+    }
+    return 0;
+}
+
 static int mkpow(int a, int b)
 {
     int i;
     Num e;
     long k;
     if (a == NIL || b == NIL) return NIL;
+    if (isnum(b) && num_isint(numof(b), &k)) {
+        if (pool[a].op == OP_CONST && pool[a].fn == K_I) {
+            k = ((k % 4) + 4) % 4;
+            if (k == 0) return mknum(num_int(1));
+            if (k == 1) return a;
+            if (k == 2) return mknum(num_int(-1));
+            return mkmul(mknum(num_int(-1)), a);
+        }
+        if (pool[a].op == OP_MAT) {
+            if (k < -8 || k > 8) { seterr("Matrix exponent too large."); return NIL; }
+            return mat_pow(a, k);
+        }
+    }
     if (isnum(b)) {
         e = numof(b);
         if (num_zero(e)) return mknum(num_int(1));
@@ -363,10 +627,18 @@ static int sqrt_num_node(Num a)
     long n, d, k = 1, i;
     if (num_sqrt(a, &r)) return mknum(r);
     if (a.real) {
-        if (a.r < 0.0) { seterr("Square root of negative number."); return NIL; }
+        if (a.r < 0.0) {                       /* sqrt(-x) = sqrt(x)*i */
+            int s = sqrt_num_node(num_real(-a.r));
+            if (s == NIL) return NIL;
+            return mkmul(s, mkconst(K_I));
+        }
         return mkpow(mknum(a), mknum(num_rat(1, 2)));
     }
-    if (a.n < 0) { seterr("Square root of negative number."); return NIL; }
+    if (a.n < 0) {                             /* sqrt(-x) = sqrt(x)*i */
+        int s = sqrt_num_node(num_negv(a));
+        if (s == NIL) return NIL;
+        return mkmul(s, mkconst(K_I));
+    }
     if (a.n == 0) return mknum(num_int(0));
     if ((double)a.n * (double)a.d > 2000000000.0)
         return mkpow(mknum(a), mknum(num_rat(1, 2)));
@@ -399,7 +671,8 @@ static int rankof(int n)
     case OP_NUM: return 0;
     case OP_CONST: return 1;
     case OP_VAR: return 2;
-    case OP_FUN: return 3;
+    case OP_FUN:
+    case OP_MAT: return 3;
     case OP_POW: return 4;
     case OP_MUL: return 5;
     default: return 6;
@@ -415,7 +688,8 @@ static int weight(int n)
     switch (pool[n].op) {
     case OP_NUM: return 0;
     case OP_VAR:
-    case OP_CONST: return 1;
+    case OP_CONST:
+    case OP_MAT: return 1;
     case OP_FUN: return 1 + weight(pool[n].a);
     case OP_POW:
         if (isnum(pool[n].b) && num_isint(numof(pool[n].b), &k) && k > 0 && k < 100)
@@ -454,6 +728,17 @@ static int cmp(int x, int y)
     case OP_FUN:
         if (pool[x].fn != pool[y].fn) return pool[x].fn < pool[y].fn ? -1 : 1;
         return cmp(pool[x].a, pool[y].a);
+    case OP_MAT: {
+        Mat *A = &mats[pool[x].fn], *B = &mats[pool[y].fn];
+        int i, c2;
+        if (A->rows != B->rows) return A->rows < B->rows ? -1 : 1;
+        if (A->cols != B->cols) return A->cols < B->cols ? -1 : 1;
+        for (i = 0; i < A->rows * A->cols; i++) {
+            c2 = cmp(A->e[i], B->e[i]);
+            if (c2) return c2;
+        }
+        return 0;
+    }
     case OP_POW:
         c = cmp(pool[x].a, pool[y].a);
         if (c) return c;
@@ -480,6 +765,14 @@ static int eq(int x, int y)
     case OP_VAR:
     case OP_CONST: return pool[x].fn == pool[y].fn;
     case OP_FUN: return pool[x].fn == pool[y].fn && eq(pool[x].a, pool[y].a);
+    case OP_MAT: {
+        Mat *A = &mats[pool[x].fn], *B = &mats[pool[y].fn];
+        int i;
+        if (A->rows != B->rows || A->cols != B->cols) return 0;
+        for (i = 0; i < A->rows * A->cols; i++)
+            if (!eq(A->e[i], B->e[i])) return 0;
+        return 1;
+    }
     default: return eq(pool[x].a, pool[y].a) && eq(pool[x].b, pool[y].b);
     }
 }
@@ -661,7 +954,23 @@ static void rnd(int n, int lvl)
     switch (pool[n].op) {
     case OP_NUM: rnd_num(numof(n)); break;
     case OP_VAR: rch((char)pool[n].fn); break;
-    case OP_CONST: rput(pool[n].fn == K_PI ? "pi" : "e"); break;
+    case OP_CONST:
+        rput(pool[n].fn == K_PI ? "pi" : pool[n].fn == K_E ? "e" : "i");
+        break;
+    case OP_MAT: {
+        Mat *A = &mats[pool[n].fn];
+        int r, c;
+        rch('[');
+        for (r = 0; r < A->rows; r++) {
+            if (r) rch(';');
+            for (c = 0; c < A->cols; c++) {
+                if (c) rch(',');
+                rnd(A->e[r * A->cols + c], 0);
+            }
+        }
+        rch(']');
+        break;
+    }
     case OP_FUN:
         rput(fnames[pool[n].fn - 1]);
         rch('(');
@@ -688,12 +997,57 @@ static void render_to(int n, char *dst, int sz)
 /* ---------------- Vereinfachen ---------------- */
 
 static int simp(int n);
+static int dist(int a, int b);
 
 static int has_anyvar(int n)
 {
+    int i, k;
     if (n == NIL) return 0;
     if (pool[n].op == OP_VAR) return 1;
+    if (pool[n].op == OP_MAT) {
+        Mat *A = &mats[pool[n].fn];
+        for (i = 0, k = A->rows * A->cols; i < k; i++)
+            if (has_anyvar(A->e[i])) return 1;
+        return 0;
+    }
     return has_anyvar(pool[n].a) || has_anyvar(pool[n].b);
+}
+
+static int has_mat(int n)
+{
+    if (n == NIL) return 0;
+    if (pool[n].op == OP_MAT || matfun(n)) return 1;
+    if (pool[n].op == OP_NUM || pool[n].op == OP_VAR || pool[n].op == OP_CONST) return 0;
+    if (pool[n].op == OP_FUN) return has_mat(pool[n].a);
+    return has_mat(pool[n].a) || has_mat(pool[n].b);
+}
+
+static int has_i(int n)
+{
+    int i, k;
+    if (n == NIL) return 0;
+    if (pool[n].op == OP_CONST) return pool[n].fn == K_I;
+    if (pool[n].op == OP_NUM || pool[n].op == OP_VAR) return 0;
+    if (pool[n].op == OP_MAT) {
+        Mat *A = &mats[pool[n].fn];
+        for (i = 0, k = A->rows * A->cols; i < k; i++)
+            if (has_i(A->e[i])) return 1;
+        return 0;
+    }
+    return has_i(pool[n].a) || has_i(pool[n].b);
+}
+
+static int mat_simp(int n)
+{
+    Mat *A = &mats[pool[n].fn];
+    int el[MAXME], i, n2 = A->rows * A->cols, ch = 0;
+    for (i = 0; i < n2; i++) {
+        el[i] = simp(A->e[i]);
+        if (el[i] == NIL) return NIL;
+        if (el[i] != A->e[i]) ch = 1;
+    }
+    if (!ch) return n;
+    return mkmat(A->rows, A->cols, el);
 }
 
 static void split_coeff(int t, Num *c, int *rest)
@@ -734,6 +1088,16 @@ static int simp_fun(int f, int a)
 {
     Num v, k;
     long m;
+    if (f == F_DET || f == F_INV || f == F_TRANS) {
+        if (pool[a].op != OP_MAT) {
+            seterr(f == F_DET ? "det needs a matrix." :
+                   f == F_INV ? "inv needs a matrix." : "trans needs a matrix.");
+            return NIL;
+        }
+        if (f == F_DET) return mat_det(a);
+        if (f == F_INV) return mat_inv(a);
+        return mat_trans(a);
+    }
     if (isnum(a)) {
         v = numof(a);
         switch (f) {
@@ -774,7 +1138,16 @@ static int simp_fun(int f, int a)
     if (f == F_LN && pool[a].op == OP_FUN && pool[a].fn == F_EXP) return pool[a].a;
     if (f == F_LN && pool[a].op == OP_CONST && pool[a].fn == K_E) return mknum(num_int(1));
     if (f == F_ABS && pool[a].op == OP_FUN && pool[a].fn == F_ABS) return a;
-    if (f == F_ABS && pool[a].op == OP_CONST) return a;   /* e und pi sind positiv */
+    if (f == F_ABS) {                                     /* |a + b*i| = sqrt(a^2+b^2) */
+        Num re, im;
+        if (pool[a].op == OP_CONST && pool[a].fn == K_I) return mknum(num_int(1));
+        if (cplx_split(a, &re, &im)) {
+            int s = sqrt_num_node(num_add(num_mul(re, re), num_mul(im, im)));
+            if (s != NIL) return s;
+        }
+    }
+    if (f == F_ABS && pool[a].op == OP_CONST && pool[a].fn != K_I)
+        return a;                                         /* e und pi sind positiv */
 
     /* sin/cos an Vielfachen von pi */
     if ((f == F_SIN || f == F_COS || f == F_TAN) && pi_mult(a, &k)) {
@@ -818,6 +1191,26 @@ static int simp_pow(int a, int b)
                 return sqrt_num_node(numof(a));
         }
     }
+    if (isnum(b) && num_isint(numof(b), &k) && pool[a].op == OP_ADD) {
+        Num re, im;
+        if (cplx_split(a, &re, &im) && !num_zero(im)) {
+            if (k < 0 && k >= -6) {              /* 1/z mit der Konjugierten erweitern */
+                Num d = num_add(num_mul(re, re), num_mul(im, im));
+                Num r2 = num_div(re, d), i2 = num_negv(num_div(im, d));
+                int z = simp(mkadd(mknum(r2), mkmul(mknum(i2), mkconst(K_I))));
+                if (z == NIL) return NIL;
+                return simp(mkpow(z, mknum(num_int(-k))));
+            }
+            if (k >= 2 && k <= 6) {              /* (a+b*i)^n ausrechnen */
+                int r2 = a;
+                while (--k > 0) {
+                    r2 = simp(dist(r2, a));
+                    if (r2 == NIL) return NIL;
+                }
+                return r2;
+            }
+        }
+    }
     if (iszero(a)) {
         if (isnum(b) && num_neg(numof(b))) { seterr("Division by 0."); return NIL; }
         return mknum(num_int(0));
@@ -852,6 +1245,27 @@ static int simp_mul(int n)
     for (i = 0; i < nf; i++) {
         f[i] = simp(f[i]);
         if (f[i] == NIL) return NIL;
+    }
+    for (i = 0; i < nf; i++)            /* Matrizen: Reihenfolge erhalten (nicht vertauschbar) */
+        if (pool[f[i]].op == OP_MAT) {
+            r = f[0];
+            for (j = 1; j < nf; j++) {
+                r = mkmul(r, f[j]);
+                if (r == NIL) return NIL;
+            }
+            return r;
+        }
+    if (has_i(n) && !has_anyvar(n)) {   /* komplexe Klammern ausmultiplizieren */
+        int anyadd = 0;
+        for (i = 0; i < nf; i++) if (pool[f[i]].op == OP_ADD) anyadd = 1;
+        if (anyadd) {
+            r = f[0];
+            for (j = 1; j < nf; j++) {
+                r = dist(r, f[j]);
+                if (r == NIL) return NIL;
+            }
+            return simp(r);
+        }
     }
     for (i = 0; i < nf; i++) {
         int b;
@@ -947,6 +1361,7 @@ static int simp(int n)
     case OP_VAR:
     case OP_CONST:
         return n;
+    case OP_MAT: return mat_simp(n);
     case OP_FUN:
         a = simp(pool[n].a);
         if (a == NIL) return NIL;
@@ -1020,6 +1435,12 @@ static int hasvar(int n, char v)
     case OP_VAR: return pool[n].fn == (unsigned char)v;
     case OP_NUM:
     case OP_CONST: return 0;
+    case OP_MAT: {
+        Mat *A = &mats[pool[n].fn];
+        int i, k = A->rows * A->cols;
+        for (i = 0; i < k; i++) if (hasvar(A->e[i], v)) return 1;
+        return 0;
+    }
     default: return hasvar(pool[n].a, v) || hasvar(pool[n].b, v);
     }
 }
@@ -1099,6 +1520,9 @@ static int deriv(int n, char v)
     case OP_NUM:
     case OP_CONST:
         return mknum(num_int(0));
+    case OP_MAT:
+        seterr("Cannot differentiate a matrix.");
+        return NIL;
     case OP_VAR:
         return mknum(num_int(pool[n].fn == (unsigned char)v ? 1 : 0));
     case OP_ADD:
@@ -1276,6 +1700,12 @@ static int subst(int n, char v, int val)
         return n;
     }
     if (pool[n].op == OP_NUM || pool[n].op == OP_CONST) return n;
+    if (pool[n].op == OP_MAT) {
+        Mat *A = &mats[pool[n].fn];
+        int el[MAXME], i, k = A->rows * A->cols;
+        for (i = 0; i < k; i++) el[i] = subst(A->e[i], v, val);
+        return mkmat(A->rows, A->cols, el);
+    }
     if (pool[n].op == OP_FUN)
         return mkfun(pool[n].fn, subst(pool[n].a, v, val));
     if (pool[n].op == OP_POW)
@@ -1295,7 +1725,11 @@ static int evaln(int n, char v, double val, double *out)
     if (n == NIL) return 0;
     switch (pool[n].op) {
     case OP_NUM: *out = num_d(numof(n)); return 1;
-    case OP_CONST: *out = (pool[n].fn == K_PI) ? PI : 2.71828182845904523536; return 1;
+    case OP_CONST:
+        if (pool[n].fn == K_PI) *out = PI;
+        else if (pool[n].fn == K_E) *out = 2.71828182845904523536;
+        else return 0;                     /* i: nicht reell */
+        return 1;
     case OP_VAR:
         if (pool[n].fn == (unsigned char)v) { *out = val; return 1; }
         return 0;
@@ -1340,6 +1774,95 @@ static int evaln(int n, char v, double val, double *out)
         }
     }
     return 0;
+}
+
+/* ---------------- komplexer Zahlenwert ---------------- */
+
+typedef struct { double re, im; } Cplx;
+
+static Cplx cx(double re, double im) { Cplx z; z.re = re; z.im = im; return z; }
+
+static Cplx cx_mul(Cplx a, Cplx b)
+{
+    return cx(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re);
+}
+
+static int evalc(int n, Cplx *out)
+{
+    Cplx a, b;
+    long e;
+    if (n == NIL) return 0;
+    switch (pool[n].op) {
+    case OP_NUM: *out = cx(num_d(numof(n)), 0.0); return 1;
+    case OP_CONST:
+        if (pool[n].fn == K_PI) *out = cx(PI, 0.0);
+        else if (pool[n].fn == K_E) *out = cx(2.71828182845904523536, 0.0);
+        else *out = cx(0.0, 1.0);
+        return 1;
+    case OP_ADD:
+        if (!evalc(pool[n].a, &a) || !evalc(pool[n].b, &b)) return 0;
+        *out = cx(a.re + b.re, a.im + b.im);
+        return 1;
+    case OP_MUL:
+        if (!evalc(pool[n].a, &a) || !evalc(pool[n].b, &b)) return 0;
+        *out = cx_mul(a, b);
+        return 1;
+    case OP_POW:
+        if (!evalc(pool[n].a, &a) || !evalc(pool[n].b, &b)) return 0;
+        if (b.im != 0.0 || b.re != floor(b.re) || fabs(b.re) > 8.0) return 0;
+        e = (long)b.re;
+        if (e < 0) {                            /* 1/z = konjugiert / |z|^2 */
+            double d = a.re * a.re + a.im * a.im;
+            if (d == 0.0) { seterr("Division by 0."); return 0; }
+            a = cx(a.re / d, -a.im / d);
+            e = -e;
+        }
+        *out = cx(1.0, 0.0);
+        while (e > 0) { *out = cx_mul(*out, a); e--; }
+        return 1;
+    }
+    return 0;
+}
+
+static void fmt_cplx(char *b, double re, double im)
+{
+    char ti[40];
+    if (fabs(re) < 1e-12) re = 0.0;
+    if (fabs(im) < 1e-12) im = 0.0;
+    if (im == 0.0) { sprintf(b, "%.10g", re); return; }
+    if (im == 1.0) strcpy(ti, "i");
+    else if (im == -1.0) strcpy(ti, "-i");
+    else sprintf(ti, "%.10g*i", im);
+    if (re == 0.0) { strcpy(b, ti); return; }
+    if (im > 0.0) sprintf(b, "%.10g+%s", re, ti);
+    else sprintf(b, "%.10g%s", re, ti);          /* ti beginnt mit '-' */
+}
+
+/* Matrix Element fuer Element als Zahlenwert; 0 = nicht numerisch */
+static int approx_mat(int node, char *out, int outsz)
+{
+    Mat *A = &mats[pool[node].fn];
+    int i, n = A->rows * A->cols;
+    double v;
+    char t[40];
+    rbuf = out; rlen = 0; rmax = outsz;
+    if (outsz > 0) out[0] = 0;
+    rch('[');
+    for (i = 0; i < n; i++) {
+        if (i && i % A->cols == 0) rch(';');
+        else if (i) rch(',');
+        if (evaln(A->e[i], 0, 0.0, &v)) {
+            if (fabs(v) < 1e-12) v = 0.0;
+            sprintf(t, "%.10g", v);
+        } else {
+            Cplx z;
+            if (!evalc(A->e[i], &z)) return 0;
+            fmt_cplx(t, z.re, z.im);
+        }
+        rput(t);
+    }
+    rch(']');
+    return 1;
 }
 
 /* ---------------- Faktorisieren ---------------- */
@@ -1550,12 +2073,46 @@ static int factor_expr(int e)
 
 /* ---------------- Loesen ---------------- */
 
+/* Nullstellen von c[2]x^2 + c[1]x + c[0]; bei negativer Diskriminante
+ * komplex. 0 = Fehler (Text in cas_err). */
+static int quad_roots(Num *c, int *roots, int *nr)
+{
+    Num D = num_sub(num_mul(c[1], c[1]), num_mul(num_int(4), num_mul(c[2], c[0])));
+    int den = mknum(num_mul(num_int(2), c[2]));
+    int re, im, s;
+    if (den == NIL) return 0;
+    if (num_neg(D)) {
+        Num nd = num_negv(D);
+        re = mknum(num_div(num_negv(c[1]), num_mul(num_int(2), c[2])));
+        s = sqrt_num_node(nd);
+        if (s == NIL) return 0;
+        im = simp(mkmul(s, mkpow(den, mknum(num_int(-1)))));
+        if (im == NIL) return 0;
+        roots[(*nr)++] = simp(mkadd(re, mkmul(im, mkconst(K_I))));
+        roots[(*nr)++] = simp(mkadd(re, mkmul(mknum(num_int(-1)), mkmul(im, mkconst(K_I)))));
+        return 1;
+    }
+    s = sqrt_num_node(D);
+    if (s == NIL) return 0;
+    roots[(*nr)++] = simp(mkmul(mkadd(mknum(num_negv(c[1])), s),
+                                mkpow(den, mknum(num_int(-1)))));
+    if (!num_zero(D))
+        roots[(*nr)++] = simp(mkmul(mkadd(mknum(num_negv(c[1])),
+                                         mkmul(mknum(num_int(-1)), s)),
+                                    mkpow(den, mknum(num_int(-1)))));
+    return 1;
+}
+
 static int solve_cmd(int node, char v, char *out, int outsz)
 {
     int e, roots[MAXDEG + 2], nr = 0, i, j, deg;
-    Num c[MAXDEG + 1], D, root;
+    Num c[MAXDEG + 1], root;
     char line[1024], tmp[120];
 
+    if (has_mat(node)) {
+        strcpy(out, "solve needs an equation, not a matrix.");
+        return -1;
+    }
     if (pool[node].op == OP_EQ)
         e = mkadd(pool[node].a, mkmul(mknum(num_int(-1)), pool[node].b));
     else
@@ -1576,16 +2133,9 @@ static int solve_cmd(int node, char v, char *out, int outsz)
     if (deg == 1) {
         roots[nr++] = mknum(num_div(num_negv(c[0]), c[1]));
     } else if (deg == 2) {
-        D = num_sub(num_mul(c[1], c[1]), num_mul(num_int(4), num_mul(c[2], c[0])));
-        if (num_neg(D)) { strcpy(out, "no real solution"); return 1; }
-        roots[nr++] = sqrt_num_node(D);
-        if (roots[0] == NIL) { strcpy(out, "Cannot solve that exactly."); return -1; }
-        {
-            int s1 = mkadd(mknum(num_negv(c[1])), roots[0]);
-            int s2 = mkadd(mknum(num_negv(c[1])), mkmul(mknum(num_int(-1)), roots[0]));
-            int den = mknum(num_mul(num_int(2), c[2]));
-            roots[0] = simp(mkmul(s1, mkpow(den, mknum(num_int(-1)))));
-            if (!num_zero(D)) roots[nr++] = simp(mkmul(s2, mkpow(den, mknum(num_int(-1)))));
+        if (!quad_roots(c, roots, &nr)) {
+            strcpy(out, cas_err[0] ? cas_err : "Cannot solve that exactly.");
+            return -1;
         }
     } else {
         while (deg > 2) {
@@ -1597,24 +2147,16 @@ static int solve_cmd(int node, char v, char *out, int outsz)
         }
         if (deg == 1) roots[nr++] = mknum(num_div(num_negv(c[0]), c[1]));
         else if (deg == 2) {
-            D = num_sub(num_mul(c[1], c[1]), num_mul(num_int(4), num_mul(c[2], c[0])));
-            if (!num_neg(D)) {
-                roots[nr++] = sqrt_num_node(D);
-                if (roots[nr - 1] == NIL) { strcpy(out, "Cannot solve that exactly."); return -1; }
-                {
-                    int s1 = mkadd(mknum(num_negv(c[1])), roots[nr - 1]);
-                    int s2 = mkadd(mknum(num_negv(c[1])), mkmul(mknum(num_int(-1)), roots[nr - 1]));
-                    int den = mknum(num_mul(num_int(2), c[2]));
-                    roots[nr - 1] = simp(mkmul(s1, mkpow(den, mknum(num_int(-1)))));
-                    if (!num_zero(D)) roots[nr++] = simp(mkmul(s2, mkpow(den, mknum(num_int(-1)))));
-                }
+            if (!quad_roots(c, roots, &nr)) {
+                strcpy(out, cas_err[0] ? cas_err : "Cannot solve that exactly.");
+                return -1;
             }
         } else if (deg > 2) {
             strcpy(out, "Cannot solve that exactly.");
             return -1;
         }
     }
-    if (nr == 0) { strcpy(out, "no real solution"); return 1; }
+    if (nr == 0) { strcpy(out, "no solution"); return 1; }
     {
         char saved[80];
         memcpy(saved, cas_err, sizeof saved);
@@ -1673,6 +2215,43 @@ static int ans_node(void)
 
 static int parse_rel(P *p);
 
+/* Matrixliteral [1,2;3,4] */
+static int parse_mat(P *p)
+{
+    int el[MAXME], n = 0, c = 0, rows = 0, cols = 0;
+    p->s++;                                    /* '[' */
+    for (;;) {
+        int e2;
+        pskip(p);
+        if (*p->s == ']') { seterr("Empty matrix."); return NIL; }
+        e2 = parse_rel(p);
+        if (e2 == NIL) return NIL;
+        if (pool[e2].op == OP_MAT) {
+            seterr("Nested matrices are not supported.");
+            return NIL;
+        }
+        if (n >= MAXME) { seterr("Matrix too large."); return NIL; }
+        el[n++] = e2;
+        c++;
+        pskip(p);
+        if (*p->s == ',') { p->s++; continue; }
+        if (*p->s == ';') {
+            p->s++;
+            if (rows == 0) cols = c;
+            else if (c != cols) { seterr("Rows must have the same length."); return NIL; }
+            rows++; c = 0;
+            continue;
+        }
+        if (*p->s == ']') { p->s++; break; }
+        seterr("']' missing.");
+        return NIL;
+    }
+    if (rows == 0) cols = c;
+    else if (c != cols) { seterr("Rows must have the same length."); return NIL; }
+    rows++;
+    return mkmat(rows, cols, el);
+}
+
 static int parse_num(P *p)
 {
     long ip = 0, fp = 0, sc = 1;
@@ -1699,6 +2278,7 @@ static int parse_prim(P *p)
 {
     int i, a, c;
     pskip(p);
+    if (*p->s == '[') return parse_mat(p);
     if (*p->s == '(') {
         p->s++;
         a = parse_rel(p);
@@ -1751,6 +2331,10 @@ static int parse_prim(P *p)
         if (tolower((unsigned char)*p->s) == 'e') {
             p->s++;
             return mkconst(K_E);
+        }
+        if (tolower((unsigned char)*p->s) == 'i' && !isalnum((unsigned char)p->s[1])) {
+            p->s++;
+            return mkconst(K_I);
         }
         c = tolower((unsigned char)*p->s++);
         return mkvar((char)c);
@@ -1809,7 +2393,7 @@ static int parse_mul(P *p)
             b = parse_unary(p);
             if (b == NIL) return NIL;
             a = mkmul(a, mkpow(b, mknum(num_int(-1))));
-        } else if (isdigit((unsigned char)c) || c == '.' || c == '(' ||
+        } else if (isdigit((unsigned char)c) || c == '.' || c == '(' || c == '[' ||
                    isalpha((unsigned char)c)) {
             b = parse_unary(p);
             if (b == NIL) return NIL;
@@ -1905,8 +2489,8 @@ static int split_args(const char *s, char out[][200], int max)
     o = out[0];
     *o = 0;
     while (*s) {
-        if (*s == '(') d++;
-        if (*s == ')') d--;
+        if (*s == '(' || *s == '[') d++;
+        if (*s == ')' || *s == ']') d--;
         if ((*s == ',' || *s == ';') && d == 0) {
             *o = 0;
             trim(out[n]);
@@ -1925,6 +2509,18 @@ static int split_args(const char *s, char out[][200], int max)
 }
 
 static int cas_ok(int node) { return node != NIL && cas_err[0] == 0; }
+
+/* Steht i als eigene Einheit im Text? (pi, sin usw. zaehlen nicht) */
+static int has_i_unit(const char *s)
+{
+    const char *p;
+    for (p = s; *p; p++)
+        if (tolower((unsigned char)*p) == 'i') {
+            int prev_alpha = p > s && isalpha((unsigned char)p[-1]);
+            if (!prev_alpha && !isalnum((unsigned char)p[1])) return 1;
+        }
+    return 0;
+}
 
 static int argvar(char args[][200], int idx, int nargs, char *v)
 {
@@ -1952,22 +2548,39 @@ int cas_eval(const char *in, char *out, int outsz, double ansv)
     strcpy(work, in);
     trim(work);
     lp = strchr(work, '(');
-    if (!lp) return 0;
-    n = (int)(lp - work);
-    if (n > 20) return 0;
-    memcpy(name, work, n);
-    name[n] = 0;
-    trim(name);
-    for (i = 0; name[i]; i++) name[i] = (char)tolower((unsigned char)name[i]);
-    if (!strcmp(name, "simplify") || !strcmp(name, "simpl")) cmd = 1;
-    else if (!strcmp(name, "expand")) cmd = 2;
-    else if (!strcmp(name, "factor")) cmd = 3;
-    else if (!strcmp(name, "diff") || !strcmp(name, "deriv")) cmd = 4;
-    else if (!strcmp(name, "integrate") || !strcmp(name, "integ")) cmd = 5;
-    else if (!strcmp(name, "solve")) cmd = 6;
-    else if (!strcmp(name, "subst") || !strcmp(name, "substitute")) cmd = 7;
-    else if (!strcmp(name, "approx") || !strcmp(name, "evalf")) cmd = 8;
-    if (!cmd) return 0;
+    if (lp) {
+        n = (int)(lp - work);
+        if (n > 20) return 0;
+        memcpy(name, work, n);
+        name[n] = 0;
+        trim(name);
+        for (i = 0; name[i]; i++) name[i] = (char)tolower((unsigned char)name[i]);
+        if (!strcmp(name, "simplify") || !strcmp(name, "simpl")) cmd = 1;
+        else if (!strcmp(name, "expand")) cmd = 2;
+        else if (!strcmp(name, "factor")) cmd = 3;
+        else if (!strcmp(name, "diff") || !strcmp(name, "deriv")) cmd = 4;
+        else if (!strcmp(name, "integrate") || !strcmp(name, "integ")) cmd = 5;
+        else if (!strcmp(name, "solve")) cmd = 6;
+        else if (!strcmp(name, "subst") || !strcmp(name, "substitute")) cmd = 7;
+        else if (!strcmp(name, "approx") || !strcmp(name, "evalf")) cmd = 8;
+    }
+    if (!cmd) {                  /* Matrixliterale, det/inv/trans und i direkt rechnen */
+        if (strchr(work, '[') || has_i_unit(work)) cmd = 9;
+        else return 0;
+    }
+    if (cmd == 9) {
+        ntop = 0;
+        nmats = 0;
+        cas_err[0] = 0;
+        node = parse_full(work, 0);
+        if (cas_ok(node)) node = simp(node);
+        if (!cas_ok(node)) {
+            setout(out, outsz, cas_err[0] ? cas_err : "Syntax error.");
+            return -1;
+        }
+        render_to(node, out, outsz);
+        return 1;
+    }
 
     rp = work + strlen(work) - 1;
     while (rp > lp && (*rp == ' ' || *rp == '\t')) rp--;
@@ -1982,6 +2595,7 @@ int cas_eval(const char *in, char *out, int outsz, double ansv)
     if (nargs < 0) { setout(out, outsz, "Too many arguments."); return -1; }
 
     ntop = 0;
+    nmats = 0;
     cas_err[0] = 0;
 
     switch (cmd) {
@@ -2067,14 +2681,29 @@ int cas_eval(const char *in, char *out, int outsz, double ansv)
         if (!cas_ok(node)) break;
         node = simp(node);
         if (!cas_ok(node)) break;
-        if (!evaln(node, 0, 0.0, &dv)) {
-            setout(out, outsz, cas_err[0] ? cas_err : "Contains variables.");
-            return -1;
+        if (pool[node].op == OP_MAT) {
+            if (!approx_mat(node, out, outsz)) {
+                setout(out, outsz, cas_err[0] ? cas_err : "Contains variables.");
+                return -1;
+            }
+            return 1;
         }
-        if (fabs(dv) < 1e-12) dv = 0.0;
-        sprintf(tmp, "%.10g", dv);
-        setout(out, outsz, tmp);
-        return 1;
+        if (evaln(node, 0, 0.0, &dv)) {
+            if (fabs(dv) < 1e-12) dv = 0.0;
+            sprintf(tmp, "%.10g", dv);
+            setout(out, outsz, tmp);
+            return 1;
+        }
+        {
+            Cplx z;
+            if (evalc(node, &z)) {
+                fmt_cplx(tmp, z.re, z.im);
+                setout(out, outsz, tmp);
+                return 1;
+            }
+        }
+        setout(out, outsz, cas_err[0] ? cas_err : "Contains variables.");
+        return -1;
     }
 
     if (cas_err[0]) setout(out, outsz, cas_err);

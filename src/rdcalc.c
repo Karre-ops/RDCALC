@@ -206,30 +206,37 @@ static int load_script(const char *fn)
 #define SCRIPT_END() (script_mode && script_i >= script_n)   /* Test: Bild so lassen und beenden */
 
 /* ---------------- Rechner-Fenster ---------------- */
-#define NB 48
-#define NCOL 8
+#define NB 54
+#define NCOL 9
 static const char *blbl[NB] = {
-    "7", "8", "9", "/", "(", ")", "sin", "asin",
-    "4", "5", "6", "*", "^", "sqrt", "cos", "acos",
-    "1", "2", "3", "-", "pi", "e", "tan", "atan",
-    "0", ".", "=", "+", "ans", "x", "ln", "log",
-    "C", "<-", "Deg", "abs", "exp", "x^2", "Plot", "Quit",
-    "simpl", "expand", "factor", "diff", "integ", "solve", "subst", "help" };
-#define B_EQ 26
-#define B_C 32
-#define B_BS 33
-#define B_DEG 34
-#define B_X2 37
-#define B_PLOT 38
-#define B_END 39
-#define B_SIMPL 40
-#define B_EXPAND 41
-#define B_FACTOR 42
-#define B_DIFF 43
-#define B_INTEG 44
-#define B_SOLVE 45
-#define B_SUBST 46
-#define B_HELP 47
+    "7", "8", "9", "/", "(", ")", "sin", "asin", "^",
+    "4", "5", "6", "*", "pi", "e", "cos", "acos", "sqrt",
+    "1", "2", "3", "-", "ans", "x^2", "tan", "atan", "ln",
+    "0", ".", "=", "+", "C", "<-", "log", "abs", "exp",
+    "simpl", "expand", "factor", "diff", "integ", "solve", "subst", "help", "Deg",
+    "det", "inv", "trans", "i", "[", "]", "Plot", "Quit", "mtx" };
+#define B_EQ 29
+#define B_C 31
+#define B_BS 32
+#define B_DEG 44
+#define B_X2 23
+#define B_PLOT 51
+#define B_END 52
+#define B_SIMPL 36
+#define B_EXPAND 37
+#define B_FACTOR 38
+#define B_DIFF 39
+#define B_INTEG 40
+#define B_SOLVE 41
+#define B_SUBST 42
+#define B_HELP 43
+#define B_DET 45
+#define B_INV 46
+#define B_TRANS 47
+#define B_I 48
+#define B_LB 49
+#define B_RB 50
+#define B_MTX 53
 #define NH 6
 static char hist[NH][160], line[64], status[80], expr[64];
 static char lastin[64];
@@ -548,12 +555,13 @@ static void cas_help(void)
         "simplify(expr)   expand(expr)   factor(expr)",
         "diff(expr[,x])   integrate(expr[,x[,a,b]])",
         "solve(equation[,x])   subst(expr,x,value)",
-        "approx(expr)   Examples:",
-        "expand((x+1)^2)   solve(x^2-5x+6=0,x)",
-        "diff(x^2*sin(x),x)   integrate(x^2,x)",
-        "Exact fractions, pi and e. ',' separates arguments."
+        "approx(expr)   i = sqrt(-1)",
+        "expand((x+1)^2)   solve(x^2+1=0,x) -> i",
+        "simplify((1+i)^2) -> 2*i   approx(1/(1+i))",
+        "Matrix: [1,2;3,4]  det(A)  inv(A)  trans(A)",
+        "A*B, A+B, 2*A, A^2.  Exact fractions, pi and e."
     };
-    ui_msgbox("Algebra (CAS)", l, 8, "OK", NULL);
+    ui_msgbox("Algebra (CAS)", l, 9, "OK", NULL);
 }
 
 static void press(int i)
@@ -575,6 +583,13 @@ static void press(int i)
     else if (i == B_INTEG) insert("integrate(");
     else if (i == B_SOLVE) insert("solve(");
     else if (i == B_SUBST) insert("subst(");
+    else if (i == B_DET) insert("det(");
+    else if (i == B_INV) insert("inv(");
+    else if (i == B_TRANS) insert("trans(");
+    else if (i == B_I) insert("i");
+    else if (i == B_LB) insert("[");
+    else if (i == B_RB) insert("]");
+    else if (i == B_MTX) insert("[1,2;3,4]");
     else if (i == B_HELP) { cas_help(); return; }
     else if (i >= 0) {
         int f;
@@ -596,7 +611,7 @@ static void key(unsigned k)
     if (c == 13) { press(B_EQ); return; }
     if (c == 27) { if (line[0]) press(B_C); else quit = 1; return; }
     if (c == 8) { press(B_BS); return; }
-    if (c >= ' ' && c < 127 && strchr("0123456789.+-*/:^(),=; abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", c)) {
+    if (c >= ' ' && c < 127 && strchr("0123456789.+-*/:^(),=;[] abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", c)) {
         s[0] = (char)c; s[1] = 0; insert(s); status[0] = 0; draw_disp(); draw_status();
     }
 }
