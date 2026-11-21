@@ -554,15 +554,16 @@ static void cas_help(void)
         "Type a command or use the CAS buttons:",
         "simplify  expand  factor (also whole numbers)",
         "diff(expr[,x])  integrate(expr[,x[,a,b]])  limit(expr,x,a)",
-        "solve(eq[,x])  zeros(expr[,x])  nsolve(eq,x,start)  subst",
+        "solve(eq[,x])  solve([gl1;gl2],[x,y])  zeros  nsolve  subst",
         "taylor(expr,x,a,n)  sum/prod(expr,x,a,b)  approx",
         "Matrix: [1,2;3,4]  det  inv  trans  rref  rank  lsolve(A,b)",
-        "charpoly(A[,x])  dot(u,v)  cross(u,v)  i = sqrt(-1)",
-        "ilaplace(expr[,s[,t]])   inverse Laplace transform",
+        "charpoly(A[,x])  eigenvals(A[,x])  eigenvect(A[,x])",
+        "dot(u,v)  cross(u,v)  i = sqrt(-1)",
+        "laplace(expr[,t[,s]])   ilaplace(expr[,s[,t]])",
         "gcd  lcm  mod  ncr  npr  fac(n)  n!   deg  coeff(expr,x,n)",
-        "Example: ilaplace(1/(s^2+2s+5)) -> exp(-t)*sin(2*t)/2"
+        "Example: laplace(exp(-t)*sin(2t)) -> 2/(s^2+2s+5)"
     };
-    ui_msgbox("Algebra (CAS)", l, 10, "OK", NULL);
+    ui_msgbox("Algebra (CAS)", l, 11, "OK", NULL);
 }
 
 static void press(int i)

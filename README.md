@@ -14,13 +14,16 @@ Die vierte Tastenreihe setzt die Befehle in die Eingabezeile, die fünfte bedien
 | `expand(ausdruck)` | ausmultiplizieren | `expand((x+1)^2)` → `x^2+2*x+1` |
 | `factor(ausdruck)` | faktorisieren | `factor(x^2-5x+6)` → `(x-3)*(x-2)` |
 | `diff(ausdruck[,x])` | ableiten | `diff(x^2*sin(x),x)` → `cos(x)*x^2+2*x*sin(x)` |
-| `integrate(ausdruck[,x[,a,b]])` | Stammfunktion, mit Grenzen bestimmtes Integral | `integrate(x^2,x)` → `x^3/3` |
+| `integrate(ausdruck[,x[,a,b]])` | Stammfunktion (auch partiell), mit Grenzen bestimmtes Integral | `integrate(x^2,x)` → `x^3/3` |
 | `solve(gleichung[,x])` | Gleichung lösen | `solve(x^2-5x+6=0,x)` → `x = 2 or x = 3` |
+| `solve([g1;g2],[x,y])` | lineares Gleichungssystem | `solve([x+y=3;x-y=1],[x,y])` → `x = 2 and y = 1` |
 | `subst(ausdruck,x,wert)` | einsetzen | `subst(x^2+1,x,3)` → `10` |
 | `approx(ausdruck)` | Zahlenwert (Winkelmodus beachten) | `approx(pi)` → `3.141592654` |
 | `rref(A)` / `rank(A)` | Zeilenstufenform / Rang | `rref([1,2;3,4])` → `[1,0;0,1]` |
 | `lsolve(A,b)` | lineares Gleichungssystem A·x=b | `lsolve([1,1;1,-1],[3,1])` → `[2;1]` |
 | `charpoly(A[,x])` | charakteristisches Polynom det(A−x·I) | `charpoly([1,2;3,4])` → `x^2-5*x-2` |
+| `eigenvals(A[,x])` | Eigenwerte | `eigenvals([2,1;1,2])` → `x = 1 or x = 3` |
+| `eigenvect(A[,x])` | Eigenvektoren | `eigenvect([1,1;0,2])` → `[1;0] or [1;1]` |
 | `taylor(expr,x,a,n)` | Taylorpolynom um a bis Ordnung n | `taylor(exp(x),x,0,4)` → `x^4/24+x^3/6+x^2/2+x+1` |
 | `limit(expr,x,a)` | Grenzwert an einer Stelle (0/0 über l'Hospital) | `limit(sin(x)/x,x,0)` → `1` |
 | `nsolve(gleichung,x,start)` | numerisch lösen (Newton) | `nsolve(x^2-2=0,x,1)` → `x = 1.414213562` |
@@ -29,6 +32,7 @@ Die vierte Tastenreihe setzt die Befehle in die Eingabezeile, die fünfte bedien
 | `gcd` `lcm` `mod` `ncr` `npr` `fac` | Zahlentheorie, `n!` als Nachsatz | `gcd(12,18)` → `6`, `5!` → `120` |
 | `sum(expr,x,a,b)` / `prod(expr,x,a,b)` | Summe / Produkt über ganze Grenzen | `sum(x^2,x,1,10)` → `385` |
 | `dot(u,v)` / `cross(u,v)` | Skalar- und Kreuzprodukt | `dot([1,2,3],[4,5,6])` → `32` |
+| `laplace(expr[,t[,s]])` | Laplace-Transformation | `laplace(exp(-t)*sin(2t))` → `2/(s^2+2*s+5)` |
 | `ilaplace(expr[,s[,t]])` | inverse Laplace-Transformation | `ilaplace(1/(s^2+1))` → `sin(t)` |
 
 Gerechnet wird exakt: `1/3` bleibt ein Bruch, `sqrt(8)` wird zu `2*sqrt(2)`, `sin(pi)` zu `0`. `pi` und `e` sind Konstanten. Die Eingabe versteht `2x`, `3(x+1)`, `x^2`, `sqrt(...)`, `ln`, `log`, `exp`, `abs` und die Winkelfunktionen.
@@ -60,12 +64,27 @@ Matrizen schreibt man als `[1,2;3,4]`: Zeilen durch `;`, Elemente durch `,`. `+`
 | `2*[1,2;3,4]` | `[2,4;6,8]` |
 | `[1,2;3,4]^2` | `[7,10;15,22]` |
 | `det([x,1;1,x])` | `x^2-1` |
+| `eigenvals([2,1;1,2])` | `x = 1 or x = 3` |
+| `eigenvect([1,1;0,2])` | `[1;0] or [1;1]` |
 
 Die Tasten `det`, `inv`, `trans`, `i`, `[` und `]` stehen in der fünften Reihe; `mtx` setzt `[1,2;3,4]` als Vorlage ein.
 
+### Laplace-Transformation
+
+`laplace(ausdruck[,t[,s]])` bildet f(t) → F(s); Standardvariablen sind `t` und `s`. Abgedeckt sind Konstanten, `t^n`, `exp(a*t)`, `sin(w*t)`, `cos(w*t)` und Produkte daraus (Ableitungssatz für `t^n`, Verschiebungssatz für `exp`).
+
+| Beispiel | Ergebnis |
+| --- | --- |
+| `laplace(t)` | `1/s^2` |
+| `laplace(exp(2t))` | `1/(s-2)` |
+| `laplace(sin(3t))` | `3/(s^2+9)` |
+| `laplace(t*exp(-2t))` | `1/(s+2)^2` |
+| `laplace(exp(-t)*sin(2t))` | `2/(s^2+2*s+5)` |
+| `laplace(t*sin(t))` | `2*s/(s^2+1)^2` |
+
 ### Inverse Laplace-Transformation
 
-`ilaplace(ausdruck[,s[,t]])` bildet die Rücktransformierte F(s) → f(t); Standardvariablen sind `s` und `t`. Echt gebrochene rationale Funktionen werden exakt in Partialbrüche zerlegt (rationale Polstellen, mehrfache Polstellen, ein quadratischer Rest) und daraus die Grundformen zusammengesetzt.
+`ilaplace(ausdruck[,s[,t]])` bildet die Rücktransformierte F(s) → f(t); Standardvariablen sind `s` und `t`. Echt gebrochene rationale Funktionen werden exakt in Partialbrüche zerlegt (rationale Polstellen, mehrfache Polstellen, ein quadratischer Rest) und daraus die Grundformen zusammengesetzt. Polynomanteile ergeben Delta-Impulse, Faktoren `exp(-a*s)` eine Zeitverschiebung mit `step`.
 
 | Beispiel | Ergebnis |
 | --- | --- |
@@ -78,8 +97,13 @@ Die Tasten `det`, `inv`, `trans`, `i`, `[` und `]` stehen in der fünften Reihe;
 | `ilaplace(1/(s*(s+1)))` | `-exp(-t)+1` |
 | `ilaplace(1/(s^2-1))` | `-exp(-t)/2+exp(t)/2` |
 | `ilaplace(1/((s+1)*(s+2)*(s+3)))` | `-exp(-2*t)+exp(-3*t)/2+exp(-t)/2` |
+| `ilaplace(1)` | `delta(t)` |
+| `ilaplace(s/(s+1))` | `delta(t)-exp(-t)` |
+| `ilaplace(s^2/(s+1))` | `exp(-t)+delta'(t)-delta(t)` |
+| `ilaplace(exp(-2s)/s)` | `step(t-2)` |
+| `ilaplace(exp(-s)/(s+1))` | `exp(-t+1)*step(t-1)` |
 
-Nicht abgedeckt: der Polynomanteil (ergäbe Delta-Impulse), Verschiebungen `exp(-a*s)` (Sprungfunktionen) und nicht rationale Anteile.
+Nicht abgedeckt: nicht rationale Anteile (etwa Wurzeln in `s`), Delta-Ableitungen über `delta''` hinaus und mehrere Verschiebungen im selben Summanden.
 
 Hinweise zur Bedienung:
 
@@ -87,7 +111,7 @@ Hinweise zur Bedienung:
 - Die Taste `=` schreibt jetzt ein Gleichheitszeichen in die Eingabe (für `solve`). Gerechnet wird mit Enter oder der Taste `=` im Tastenfeld.
 - Jedes Ergebnis steht in einer eigenen Zeile unter der Eingabe. Sehr lange Ergebnisse werden auf die Anzeigebreite gekürzt.
 
-Grenzen der jetzigen Fassung: `solve` löst lineare und quadratische Gleichungen (auch komplex), Polynome mit rationalen Nullstellen und lineare Gleichungen mit symbolischen Koeffizienten (`solve(a*x+b=0,x)`), aber keine Gleichungssysteme (dafür `lsolve`); `factor` für eine Variable; Matrizen bis 6×6 mit `+`, `-`, `*`, `^`, `det`, `inv`, `trans`, `rref`, `rank`, `lsolve` und `charpoly` (keine Eigenwerte); Integration ohne partielle Integration (Polynome, `sin`/`cos`/`tan`/`exp`/`ln`, lineare Substitution und bestimmte Integrale); `ilaplace` für echt gebrochene rationale Funktionen mit rationalen Polen und einem quadratischen Rest, ohne Delta-Impulse und ohne Zeitverschiebung.
+Grenzen der jetzigen Fassung: `solve` löst lineare und quadratische Gleichungen (auch komplex), Polynome mit rationalen Nullstellen, lineare Gleichungen mit symbolischen Koeffizienten (`solve(a*x+b=0,x)`) und lineare Systeme über `solve([g1;g2],[x,y])`; nichtlineare Systeme lehnt es ab. `factor` für eine Variable; Matrizen bis 6×6 mit `+`, `-`, `*`, `^`, `det`, `inv`, `trans`, `rref`, `rank`, `lsolve`, `charpoly`, `eigenvals` und `eigenvect` (Eigenwerte exakt bei rationalen bzw. quadratischen Polynomen). Integration mit partieller Integration für Polynom mal `sin`/`cos`/`exp`/`ln` und für `atan`/`asin`/`acos`, aber ohne Substitutionsverfahren wie `exp(x^2)`. `laplace` deckt Konstanten, `t^n`, `exp`, `sin`/`cos` und Produkte daraus ab; `ilaplace` rationale Funktionen mit rationalen Polen und einem quadratischen Rest, dazu Polynomanteile (Delta-Impulse bis `delta''`) und Zeitverschiebungen `exp(-a*s)` (Sprungfunktion `step`).
 
 ## Stand
 
