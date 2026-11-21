@@ -15,6 +15,7 @@
 #include "rdmenu.h"
 #include "snd.h"
 #include "rdver.h"
+#include "cas.h"
 
 #include "fpu.h"                          /* fpu_detect: 8087 da? sonst rechnet der Emulator */
 
@@ -205,14 +206,15 @@ static int load_script(const char *fn)
 #define SCRIPT_END() (script_mode && script_i >= script_n)   /* Test: Bild so lassen und beenden */
 
 /* ---------------- Rechner-Fenster ---------------- */
-#define NB 40
+#define NB 48
 #define NCOL 8
 static const char *blbl[NB] = {
     "7", "8", "9", "/", "(", ")", "sin", "asin",
     "4", "5", "6", "*", "^", "sqrt", "cos", "acos",
     "1", "2", "3", "-", "pi", "e", "tan", "atan",
     "0", ".", "=", "+", "ans", "x", "ln", "log",
-    "C", "<-", "Deg", "abs", "exp", "x^2", "Plot", "Quit" };
+    "C", "<-", "Deg", "abs", "exp", "x^2", "Plot", "Quit",
+    "simpl", "expand", "factor", "diff", "integ", "solve", "subst", "help" };
 #define B_EQ 26
 #define B_C 32
 #define B_BS 33
@@ -220,8 +222,16 @@ static const char *blbl[NB] = {
 #define B_X2 37
 #define B_PLOT 38
 #define B_END 39
+#define B_SIMPL 40
+#define B_EXPAND 41
+#define B_FACTOR 42
+#define B_DIFF 43
+#define B_INTEG 44
+#define B_SOLVE 45
+#define B_SUBST 46
+#define B_HELP 47
 #define NH 6
-static char hist[NH][80], line[64], status[80], expr[64];
+static char hist[NH][160], line[64], status[80], expr[64];
 static char lastin[64];
 static int nh, lh, dx, dy, dw, dh, bx0, by0, bw, bstep, quit, shot;
 static double xlo = -10, xhi = 10, ylo, yhi; static int yfix;
@@ -232,16 +242,20 @@ static const char *lbl(int i) { return i == B_DEG ? (deg ? "Deg" : "Rad") : blbl
 
 static void draw_disp(void)
 {
-    int i, y, n = nh < lh ? nh : lh;
+    int i, y, n = nh < lh ? nh : lh, len;
     char b[90];
     mouse_hide();
     gfx_fill(dx + 1, dy + 1, dw - 2, dh - 2, 1);
-    for (i = 0; i < n; i++) {                 /* aelteste oben */
-        const char *h = hist[(nh - n + i) % NH], *eq = strchr(h, '\t');
-        y = dy + 3 + i * (gfx_fh + 2);
-        sprintf(b, "%.*s", (int)(eq - h), h);
+    for (i = 0; i < n; i++) {                 /* aelteste oben, Eingabe und Ergebnis je Zeile */
+        const char *h = hist[(nh - n + i) % NH], *tab = strchr(h, '\t');
+        len = tab ? (int)(tab - h) : (int)strlen(h);
+        y = dy + 3 + i * 2 * (gfx_fh + 2);
+        sprintf(b, "> %.*s", len > 74 ? 74 : len, h);
         gfx_text(dx + 6, y, b, 0);
-        gfx_text(dx + dw - 6 - gfx_textw(eq + 1), y, eq + 1, 0);
+        if (tab && tab[1]) {
+            sprintf(b, "= %.74s", tab + 1);
+            gfx_text(dx + 6, y + gfx_fh + 2, b, 0);
+        }
     }
     y = dy + dh - gfx_fh - 4;
     gfx_fill(dx + 1, y - 2, dw - 2, 1, 0);
@@ -255,7 +269,7 @@ static void draw_status(void)
     int y = gfx_h - 2 - gfx_fh - 4;
     mouse_hide();
     gfx_fill(4, y, gfx_w - 10, gfx_fh + 2, 1);
-    gfx_text(8, y + 1, status[0] ? status : "Enter = calculate   F5 = plot   Up = last formula   Esc = quit", 0);
+    gfx_text(8, y + 1, status[0] ? status : "Enter = calculate  CAS buttons = algebra  F5 = plot  Esc = quit", 0);
     mouse_show();
 }
 
@@ -265,7 +279,7 @@ static void draw_all(void)
     char t[48];
     mouse_hide();
     gfx_fill(0, 0, gfx_w, gfx_h, 0);
-    sprintf(t, "Calculator (%s)", fpu_present ? "8087" : "no 8087");
+    sprintf(t, "Calculator + CAS (%s)", fpu_present ? "8087" : "no 8087");
     ui_frame(0, 0, gfx_w - 3, gfx_h - 3, t);
     gfx_rect(dx, dy, dw, dh, 0);
     for (i = 0; i < NB; i++) ui_button_draw(bx(i), by(i), bw, lbl(i), i == B_EQ);
@@ -277,16 +291,35 @@ static void draw_all(void)
 
 static void add_hist(const char *e, const char *r)
 {
-    sprintf(hist[nh % NH], "%.40s\t= %.24s", e, r);
+    sprintf(hist[nh % NH], "%.76s\t%.76s", e, r);
     nh++;
 }
 
 static void calc(void)
 {
     double v;
-    char r[32];
+    char r[200];
+    int cr;
     status[0] = 0;
     if (!line[0]) return;
+    cas_set_deg(deg);
+    cr = cas_eval(line, r, sizeof r, ans);
+    if (cr < 0) { strcpy(status, r); snd_play(SND_ERROR); return; }
+    if (cr > 0) {
+        strcpy(lastin, line);
+        add_hist(line, r);
+        line[0] = 0;
+        return;
+    }
+    {   /* kein CAS-Befehl: Komma bleibt Dezimaltrennzeichen wie bisher */
+        char *p;
+        for (p = line; *p; p++) if (*p == ',') *p = '.';
+    }
+    if (strchr(line, '=')) {
+        strcpy(status, "Use solve(equation, x) for equations.");
+        snd_play(SND_ERROR);
+        return;
+    }
     if (!compile(line) || (!has_x && !run(0, &v))) { strcpy(status, perr); snd_play(SND_ERROR); return; }
     strcpy(lastin, line);
     if (has_x) { strcpy(status, "Formula with x: F5 or Plot draws it."); return; }
@@ -508,17 +541,41 @@ static int hitbtn(int mx, int my)
     return -1;
 }
 
+static void cas_help(void)
+{
+    static const char *l[] = {
+        "Type a command or use the CAS buttons:",
+        "simplify(expr)   expand(expr)   factor(expr)",
+        "diff(expr[,x])   integrate(expr[,x[,a,b]])",
+        "solve(equation[,x])   subst(expr,x,value)",
+        "approx(expr)   Examples:",
+        "expand((x+1)^2)   solve(x^2-5x+6=0,x)",
+        "diff(x^2*sin(x),x)   integrate(x^2,x)",
+        "Exact fractions, pi and e. ',' separates arguments."
+    };
+    ui_msgbox("Algebra (CAS)", l, 8, "OK", NULL);
+}
+
 static void press(int i)
 {
     status[0] = 0;
     if (i == B_EQ) calc();
     else if (i == B_C) line[0] = 0;
     else if (i == B_BS) { if (*line) line[strlen(line) - 1] = 0; }
-    else if (i == B_DEG) { deg = !deg; mouse_hide(); ui_button_draw(bx(i), by(i), bw, lbl(i), 0); mouse_show();
+    else if (i == B_DEG) { deg = !deg; cas_set_deg(deg);
+                           mouse_hide(); ui_button_draw(bx(i), by(i), bw, lbl(i), 0); mouse_show();
                            strcpy(status, deg ? "Angles in degrees." : "Angles in radians."); }
     else if (i == B_X2) insert("^2");
     else if (i == B_PLOT) { plot(); return; }
     else if (i == B_END) { quit = 1; return; }
+    else if (i == B_SIMPL) insert("simplify(");
+    else if (i == B_EXPAND) insert("expand(");
+    else if (i == B_FACTOR) insert("factor(");
+    else if (i == B_DIFF) insert("diff(");
+    else if (i == B_INTEG) insert("integrate(");
+    else if (i == B_SOLVE) insert("solve(");
+    else if (i == B_SUBST) insert("subst(");
+    else if (i == B_HELP) { cas_help(); return; }
     else if (i >= 0) {
         int f;
         insert(blbl[i]);
@@ -536,11 +593,10 @@ static void key(unsigned k)
         else if (sc == 0x48 && lastin[0]) { strcpy(line, lastin); draw_disp(); }
         return;
     }
-    if (c == 13 || c == '=') { press(B_EQ); return; }
+    if (c == 13) { press(B_EQ); return; }
     if (c == 27) { if (line[0]) press(B_C); else quit = 1; return; }
     if (c == 8) { press(B_BS); return; }
-    if (c == ',') c = '.';
-    if (c >= ' ' && c < 127 && strchr("0123456789.+-*/:^() abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", c)) {
+    if (c >= ' ' && c < 127 && strchr("0123456789.+-*/:^(),=; abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", c)) {
         s[0] = (char)c; s[1] = 0; insert(s); status[0] = 0; draw_disp(); draw_status();
     }
 }
@@ -561,18 +617,18 @@ static void sta_save(void)
 {
     FILE *f = fopen(stafn, "wb");
     if (!f) return;
-    fputs("RDC1", f); STA_FELDER(STA_W) fclose(f);
+    fputs("RDC2", f); STA_FELDER(STA_W) fclose(f);
 }
 static void sta_load(void)
 {
     char m[4];
     FILE *f = fopen(stafn, "rb");
     if (!f) return;
-    if (fread(m, 4, 1, f) == 1 && !memcmp(m, "RDC1", 4)) { STA_FELDER(STA_R) }
+    if (fread(m, 4, 1, f) == 1 && !memcmp(m, "RDC2", 4)) { STA_FELDER(STA_R) }
     fclose(f);
     if (nh < 0 || xhi <= xlo) { nh = 0; xlo = -10; xhi = 10; yfix = 0; }   /* kaputte Datei */
     line[63] = lastin[63] = 0;
-    for (m[0] = 0; m[0] < NH; m[0]++) hist[m[0]][79] = 0;
+    for (m[0] = 0; m[0] < NH; m[0]++) hist[m[0]][159] = 0;
 }
 
 int main(int argc, char **argv)
@@ -597,6 +653,7 @@ int main(int argc, char **argv)
     }
     fpu_detect();
     sta_name(argv[0]); sta_load();
+    cas_set_deg(deg);
     if (!mouse_present() && !script_mode) { puts("RDCALC: No mouse driver loaded (INT 33h)."); return 1; }
     vals = malloc(720 * sizeof(double)); ok = malloc(720);
     if (!vals || !ok) { puts("RDCALC: not enough memory."); return 1; }
@@ -608,11 +665,11 @@ int main(int argc, char **argv)
     mouse_range(gfx_w, gfx_h);
     mouse_show();
 
-    pn = gfx_type == GFX_CGA ? 3 : 6;         /* Zeilen im Verlauf */
+    pn = gfx_type == GFX_CGA ? 2 : gfx_type == GFX_HGC ? 3 : 5;  /* Eintraege im Verlauf */
     lh = pn;
     bstep = (gfx_w - 24) / NCOL; bw = bstep - 6; bx0 = 12;
     dx = 12; dy = UI_TITLE_H + 6; dw = gfx_w - 27;
-    dh = (pn + 1) * (gfx_fh + 2) + 8;
+    dh = (2 * pn + 1) * (gfx_fh + 2) + 8;
     by0 = dy + dh + (gfx_type == GFX_CGA ? 5 : 12);
     draw_all();
 
@@ -630,7 +687,8 @@ int main(int argc, char **argv)
     }
     if (shot) {                              /* Test: Bild und letztes Ergebnis */
         FILE *f = nh ? fopen("CALC.TXT", "w") : NULL;
-        if (f) { fputs(strchr(hist[(nh - 1) % NH], '=') + 2, f); fclose(f); }
+        char *t = nh ? strchr(hist[(nh - 1) % NH], '\t') : NULL;
+        if (f) { fputs(t ? t + 1 : "", f); fclose(f); }
         mouse_hide(); gfx_dump("SHOT.BIN");
     }
     if (prn_file) fclose(prn_file);
