@@ -1,0 +1,39 @@
+; Ressourcen fuer RDCALC.EXE (RD2-Fassung)
+SPRACHE DE
+TEXTE
+  1 "RDCALC"
+  2 "RDCALC (8087)"
+  10 "Eingabe = rechnen   F5 = Kurve   F1 = Hilfe   Esc = Ende"
+  11 "Gleichungen mit solve(Gleichung, x) l”sen."
+  12 "Formel mit x: F5 oder Plot zeichnet sie."
+  13 "Rechne ..."
+  14 "Die Formel hat im Bereich keinen Wert."
+  15 "+/- Zoom   Pfeile schieben   Y y-Zoom   A y automatisch   0 Anfang   P Drucken   Esc"
+  16 "Erst eine Formel mit x eingeben, z. B. sin(x)."
+  17 "Zu wenig Speicher."
+  18 "Kurve"
+  19 "Winkel in Grad."
+  20 "Winkel im Bogenmaá."
+  30 "Befehle tippen oder die CAS-Tasten nehmen:\nsimplify  expand  factor   diff(f[,x])\nintegrate(f[,x[,a,b]])   limit(f,x,a)\nsolve(Gl[,x])  solve([g1;g2],[x,y])\nzeros  nsolve(Gl,x,start)  subst(f,x,w)\ntaylor(f,x,a,n)  sum/prod(f,x,a,b)  approx\nMatrix [1,2;3,4]: det inv trans rref rank\nlsolve charpoly eigenvals eigenvect\ndot cross   i = Wurzel(-1)\nlaplace(f[,t[,s]])  ilaplace(F[,s[,t]])\ngcd lcm mod ncr npr fac  n!  deg  coeff\nDezimalpunkt, Komma trennt Argumente."
+  31 "Algebra (CAS)"
+ENDE
+SPRACHE EN
+TEXTE
+  1 "RDCALC"
+  2 "RDCALC (8087)"
+  10 "Enter = calculate   F5 = plot   F1 = help   Esc = quit"
+  11 "Use solve(equation, x) for equations."
+  12 "Formula with x: F5 or Plot draws it."
+  13 "Calculating ..."
+  14 "The formula has no value in this range."
+  15 "+/- zoom   arrows move   Y y zoom   A y auto   0 reset   P print   Esc"
+  16 "First enter a formula with x, e.g. sin(x)."
+  17 "Not enough memory."
+  18 "Plot"
+  19 "Angles in degrees."
+  20 "Angles in radians."
+  30 "Type a command or use the CAS buttons:\nsimplify  expand  factor   diff(f[,x])\nintegrate(f[,x[,a,b]])   limit(f,x,a)\nsolve(eq[,x])  solve([g1;g2],[x,y])\nzeros  nsolve(eq,x,start)  subst(f,x,v)\ntaylor(f,x,a,n)  sum/prod(f,x,a,b)  approx\nMatrix [1,2;3,4]: det inv trans rref rank\nlsolve charpoly eigenvals eigenvect\ndot cross   i = sqrt(-1)\nlaplace(f[,t[,s]])  ilaplace(F[,s[,t]])\ngcd lcm mod ncr npr fac  n!  deg  coeff\nDecimal point, comma separates arguments."
+  31 "Algebra (CAS)"
+ENDE
+SPRACHE ALLE
+SYMBOL 1 "RDCALC.ICO"

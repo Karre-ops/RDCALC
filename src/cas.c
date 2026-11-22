@@ -54,7 +54,13 @@ typedef struct { int real; long n, d; double r; } Num;
 
 typedef struct { int rows, cols; int e[MAXME]; } Mat;   /* Elemente als Knoten */
 
+#ifdef CAS_FARPOOL                      /* RD2: Knoten in einem eigenen Block (MemFixed), DGROUP bleibt klein */
+static Node __far *pool;
+void cas_setpool(void __far *p) { pool = (Node __far *)p; }
+unsigned cas_poolsize(void) { return (unsigned)(MAXN * sizeof(Node)); }
+#else
 static Node pool[MAXN];
+#endif
 static int ntop;
 static Mat mats[MAXM];
 static int nmats;

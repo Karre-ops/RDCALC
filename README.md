@@ -1,12 +1,50 @@
-# RDCALC – wissenschaftlicher Rechner mit Funktionsplotter und CAS
+# RDCALC – wissenschaftlicher Rechner mit Funktionsplotter und CAS für RetroDesk 2
 
-RDCALC ist ein Rechner für DOS-PCs ab dem 8088: Formeln wie `sin(30)+2^3`, `ans` für das letzte Ergebnis, Kurven wie `2x^2-1` (F5) und Druck der Kurve auf LPT1 im Epson-Grafikmodus (9 Nadeln). Dazu kommt ein symbolischer Kern (Computer-Algebra) mit exakten Brüchen.
+RDCALC ist ein Programm für RetroDesk 2 und läuft ab dem 8088, mit und ohne 8087, auf CGA, Hercules, EGA, VGA und den übrigen RD2-Grafikarten. Es rechnet Formeln wie `sin(30)+2^3`, kennt `ans` für das letzte Ergebnis, zeichnet Kurven wie `2x^2-1` (F5) und druckt sie über das Druckersystem von RD2. Dazu kommt ein symbolischer Kern (Computer-Algebra) mit exakten Brüchen.
 
-Mit 8087 rechnet der Koprozessor, ohne ihn der Emulator der Laufzeitbibliothek (gleiches Ergebnis, nur langsamer).
+Die frühere eigenständige DOS-Fassung (aus RetroDesk 1) gibt es nicht mehr.
+
+## Installation
+
+`BIN/RDCALC.EXE` in den RD2-Ordner kopieren (z. B. `C:\RD2`) und in der Shell starten. Unter reinem DOS meldet die Datei nur, dass sie RetroDesk 2 braucht.
+
+- Speicher: 116 KB Datei, rund 137 KB Programm (davon 24 KB Stapel) plus 35 KB für die Ausdrucksbäume des CAS und 6 KB für die Kurve.
+- 8087: Die Gleitkommarechnung läuft über die Bibliotheksroutinen von Open Watcom. Meldet RD2 einen Koprozessor, rechnen sie darauf, sonst in Software. Es ist eine Datei für beide Fälle, im Titel steht dann „RDCALC (8087)“. Die exakte Bruchrechnung des CAS kommt ohne Gleitkomma aus.
+- Der Stand (Verlauf, `ans`, Grad/Bogenmaß, Kurvenbereich) wird beim Beenden in `RDCALC2.STA` neben der EXE gespeichert.
+
+## Bedienung
+
+Das Fenster hat oben den Verlauf (je Eintrag Eingabe und Ergebnis, auf CGA 2, auf VGA 5 Einträge), darunter die Eingabezeile und 54 Tasten in sechs Reihen.
+
+| Taste | Wirkung |
+| --- | --- |
+| Eingabe oder `=` im Tastenfeld | rechnen |
+| Rückschritt / Entf | letztes Zeichen löschen / Eingabe löschen |
+| Esc | Eingabe löschen, bei leerer Eingabe beenden |
+| Pfeil hoch | letzte Eingabe zurückholen |
+| F1 oder `help` | Übersicht der CAS-Befehle |
+| F5 oder `Plot` | Formel mit `x` als Kurve zeichnen |
+| `Deg`/`Rad` | Winkel in Grad oder Bogenmaß |
+
+Die Eingabezeile fasst 159 Zeichen; ist sie breiter als die Anzeige, bleibt ihr Ende sichtbar.
+
+### Kurve
+
+Die Kurve öffnet ein eigenes Fenster. Ein Mausklick zeigt x und f(x) an der Stelle im Titel.
+
+| Taste | Wirkung |
+| --- | --- |
+| `+` / `-` | x-Bereich verkleinern / vergrößern |
+| Pfeil links / rechts | x-Bereich verschieben |
+| `Y`, Pfeil hoch / runter | y-Bereich festhalten und zoomen, dann verschieben |
+| `A` | y-Bereich wieder automatisch |
+| `0` | Ausgangsbereich −10 bis 10 |
+| `P` | drucken (Druckdialog von RD2) |
+| Esc | Kurvenfenster schließen |
 
 ## Computer-Algebra (CAS)
 
-Die vierte Tastenreihe setzt die Befehle in die Eingabezeile, die fünfte bedient komplexe Zahlen und Matrizen; `help` zeigt eine Übersicht. Man kann die Befehle auch direkt tippen. Ohne Variablenangabe rechnet das CAS mit `x`.
+Die fünfte Tastenreihe setzt die Befehle in die Eingabezeile, die sechste bedient Matrizen und komplexe Zahlen; `help` (F1) zeigt eine Übersicht. Man kann die Befehle auch direkt tippen. Ohne Variablenangabe rechnet das CAS mit `x`.
 
 | Befehl | Wirkung | Beispiel |
 | --- | --- | --- |
@@ -107,28 +145,42 @@ Nicht abgedeckt: nicht rationale Anteile (etwa Wurzeln in `s`), Delta-Ableitunge
 
 Hinweise zur Bedienung:
 
-- Das Komma trennt CAS-Argumente; Dezimaltrennzeichen ist der Punkt.
-- Die Taste `=` schreibt jetzt ein Gleichheitszeichen in die Eingabe (für `solve`). Gerechnet wird mit Enter oder der Taste `=` im Tastenfeld.
-- Jedes Ergebnis steht in einer eigenen Zeile unter der Eingabe. Sehr lange Ergebnisse werden auf die Anzeigebreite gekürzt.
-- Die Eingabezeile fasst 159 Zeichen, das reicht auch für 6×6-Matrizen. Ist die Eingabe breiter als die Anzeige, bleibt ihr Ende sichtbar (links steht dann `<`). `!` (Fakultät) und `'` (`delta'`) lassen sich direkt tippen.
-- Die exakte Bruchrechnung kommt ohne Gleitkomma aus und ist deshalb ohne 8087 fast genauso schnell wie mit. Nur Zahlenwerte (`approx`, `nsolve`, Winkelfunktionen) profitieren vom Koprozessor.
+- Das Komma trennt CAS-Argumente; Dezimaltrennzeichen ist der Punkt. Bei reinen Zahlenformeln gilt das Komma auch als Dezimaltrennzeichen.
+- Die Taste `=` auf der Tastatur schreibt ein Gleichheitszeichen in die Eingabe (für `solve`); gerechnet wird mit Eingabe oder der Taste `=` im Tastenfeld.
+- `!` (Fakultät) und `'` (`delta'`) lassen sich direkt tippen.
+- Sehr lange Ergebnisse werden auf die Anzeigebreite gekürzt.
 
 Grenzen der jetzigen Fassung: `solve` löst lineare und quadratische Gleichungen (auch komplex), Polynome mit rationalen Nullstellen, lineare Gleichungen mit symbolischen Koeffizienten (`solve(a*x+b=0,x)`) und lineare Systeme über `solve([g1;g2],[x,y])`; nichtlineare Systeme lehnt es ab. `factor` für eine Variable; Matrizen bis 6×6 mit `+`, `-`, `*`, `^`, `det`, `inv`, `trans`, `rref`, `rank`, `lsolve`, `charpoly`, `eigenvals` und `eigenvect` (Eigenwerte exakt bei rationalen bzw. quadratischen Polynomen). Integration mit partieller Integration für Polynom mal `sin`/`cos`/`exp`/`ln` und für `atan`/`asin`/`acos`, aber ohne Substitutionsverfahren wie `exp(x^2)`. `laplace` deckt Konstanten, `t^n`, `exp`, `sin`/`cos` und Produkte daraus ab; `ilaplace` rationale Funktionen mit rationalen Polen und einem quadratischen Rest, dazu Polynomanteile (Delta-Impulse bis `delta''`) und Zeitverschiebungen `exp(-a*s)` (Sprungfunktion `step`).
 
-## Stand
-
-Das Programm stammt aus RetroDesk 1 und läuft als eigenständiges DOS-Programm (eigene Grafik, Maus und Menüs in `src/`). Der symbolische Kern liegt in `src/cas.c` und ist reines C ohne DOS-Abhängigkeiten, damit er sich auch auf dem PC testen lässt. RDCALC wird getrennt von RetroDesk 2 weiterentwickelt. Eine Fassung als RD2-Programm ist geplant.
-
-## Symbol
-
-In `symbol/` liegt das Programmsymbol (32x32 S/W, CGA 32x16, farbig in `symbol/farbe/`): Achsen mit roter Kurve, passend zu den Symbolen von RetroDesk 2. RDCALC ist noch ein RD1-Programm, deshalb steckt das Symbol noch nicht in der EXE. Für die RD2-Fassung wird es mit `tools/mkrdb.py ... --cga` aus RetroDesk 2 zur `.ICO` und über `SYMBOL 1` in der `.RC` eingebaut.
-
 ## Bauen
 
-Mit Open Watcom: `./build.sh` (erzeugt `RDCALC.EXE`).
+Mit Open Watcom 2.0 unter Linux:
+
+```
+./build.sh
+```
+
+Ergebnis ist `BIN/RDCALC.EXE`. Gebaut wird im Medium-Modell mit `-fpc`. `SDK/` enthält Kopf, Bibliothek und Startcode von RetroDesk 2 (API 2.3), `tools/` die Werkzeuge für Ressourcen und den RD2-Anhang. Weil RD2-Programme ohne den Watcom-Startcode laufen, ersetzen `src/RD2CRT.C` und `src/RD2GETDS.ASM` die wenigen Teile davon, die die Gleitkomma-Bibliothek braucht.
+
+| Datei | Inhalt |
+| --- | --- |
+| `src/RDCALC.C` | Fenster, Tasten, Verlauf, Kurve, Drucken |
+| `src/formel.c` | Zahlenformeln: Formel nach Postfix, rechnen, ausgeben |
+| `src/cas.c`, `src/cas.h` | symbolischer Kern, reines C |
+| `src/RDCALC.RC` | Texte deutsch und englisch, Symbol |
 
 ## Testen
 
-Neben dem normalen Betrieb gibt es einen Testmodus: `RDCALC /KEYS datei /SHOT` liest Tastencodes aus `datei` (je 2 Byte, Little Endian; 13 = Enter) und schreibt am Ende das letzte Ergebnis nach `CALC.TXT` und den Bildschirm nach `SHOT.BIN` (roher Grafikspeicher). Damit lassen sich Rechnungen und CAS-Befehle ohne Maus automatisch prüfen. Der symbolische Kern ist reines C und lässt sich zusätzlich mit einem beliebigen C-Compiler und einem kurzen Treiber testen.
+`test.sh` startet RetroDesk 2 in QEMU, tippt Rechnungen über den QEMU-Monitor und liest die Ergebnisse über COM1 (Befehlszeile `T`: jedes Ergebnis als „RDCALC: …“). Es braucht eine gebaute RetroDesk-2-Arbeitskopie:
 
-Lizenz: GPL v2 oder später (siehe COPYING).
+```
+RD2=/pfad/zu/RetroDesk2 LAUF=VGA ./test.sh   # VGA mit 8087
+RD2=/pfad/zu/RetroDesk2 LAUF=N ./test.sh     # VGA ohne 8087 (Befehlszeile TN)
+RD2=/pfad/zu/RetroDesk2 LAUF=CGA ./test.sh   # CGA, kürzerer Satz
+```
+
+Geprüft werden Zahlen, CAS (unter anderem Laplace, inverse Laplace, Eigenwerte 3×3, 6×6-Determinante, `5!`), eine Fehlermeldung, die Kurve, der freie Stapel und ob RD2 nach dem Beenden allen Speicher zurückbekommt.
+
+## Lizenz
+
+GPL 2 oder neuer, siehe `COPYING`.

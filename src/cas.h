@@ -11,4 +11,10 @@ int cas_eval(const char *in, char *out, int outsz, double ans);
 /* Winkelmodus fuer approx(): 1 = Grad, 0 = Bogenmass */
 void cas_set_deg(int d);
 
+#ifdef CAS_FARPOOL
+/* RD2: vor dem ersten cas_eval einen Block von cas_poolsize() Bytes uebergeben */
+void cas_setpool(void __far *p);
+unsigned cas_poolsize(void);
+#endif
+
 #endif
