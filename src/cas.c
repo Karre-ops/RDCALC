@@ -83,19 +83,25 @@ static long lgcd(long a, long b)
     return a ? a : 1;
 }
 
+/* Ueberlaufpruefung rein ganzzahlig: ohne 8087 kostet jede Gleitkommaoperation einen Emulatoraufruf */
+#define LLIM 2147483000UL
+static unsigned long luabs(long a) { return a < 0 ? 0UL - (unsigned long)a : (unsigned long)a; }
+
 static int lmulck(long a, long b, long *r)
 {
-    double p = (double)a * (double)b;
-    if (p > 2147483000.0 || p < -2147483000.0) return 0;
+    unsigned long ua = luabs(a), ub = luabs(b);
+    if ((ua | ub) <= 0xFFFFUL) { if (ua * ub > LLIM) return 0; }   /* Normalfall: beide 16 Bit */
+    else if (ua && ub > LLIM / ua) return 0;
     *r = a * b;
     return 1;
 }
 
 static int laddck(long a, long b, long *r)
 {
-    double s = (double)a + (double)b;
-    if (s > 2147483000.0 || s < -2147483000.0) return 0;
-    *r = a + b;
+    long s;
+    if ((a < 0) != (b < 0)) { *r = a + b; return 1; }              /* verschiedene Vorzeichen: kein Ueberlauf */
+    if (luabs(a) + luabs(b) > LLIM) return 0;
+    s = a + b; *r = s;
     return 1;
 }
 
@@ -189,6 +195,9 @@ static int num_cmp(Num a, Num b)
 {
     double x, y;
     if (!a.real && !b.real) {
+        long p, q;
+        if (a.d == b.d) return a.n < b.n ? -1 : a.n > b.n ? 1 : 0;
+        if (lmulck(a.n, b.d, &p) && lmulck(b.n, a.d, &q)) return p < q ? -1 : p > q ? 1 : 0;
         x = (double)a.n * (double)b.d;
         y = (double)b.n * (double)a.d;
         return x < y ? -1 : x > y ? 1 : 0;
@@ -234,8 +243,8 @@ static int num_sqrt(Num a, Num *out)
     if (a.n < 0) return 0;
     rn = isqrtl(a.n);
     rd = isqrtl(a.d);
-    if ((double)rn * (double)rn != (double)a.n) return 0;
-    if ((double)rd * (double)rd != (double)a.d) return 0;
+    if (rn * rn != a.n) return 0;               /* isqrtl(n) <= 46340: Quadrat passt in long */
+    if (rd * rd != a.d) return 0;
     *out = num_rat(rn, rd);
     return 1;
 }

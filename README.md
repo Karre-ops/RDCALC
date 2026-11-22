@@ -110,6 +110,8 @@ Hinweise zur Bedienung:
 - Das Komma trennt CAS-Argumente; Dezimaltrennzeichen ist der Punkt.
 - Die Taste `=` schreibt jetzt ein Gleichheitszeichen in die Eingabe (für `solve`). Gerechnet wird mit Enter oder der Taste `=` im Tastenfeld.
 - Jedes Ergebnis steht in einer eigenen Zeile unter der Eingabe. Sehr lange Ergebnisse werden auf die Anzeigebreite gekürzt.
+- Die Eingabezeile fasst 159 Zeichen, das reicht auch für 6×6-Matrizen. Ist die Eingabe breiter als die Anzeige, bleibt ihr Ende sichtbar (links steht dann `<`). `!` (Fakultät) und `'` (`delta'`) lassen sich direkt tippen.
+- Die exakte Bruchrechnung kommt ohne Gleitkomma aus und ist deshalb ohne 8087 fast genauso schnell wie mit. Nur Zahlenwerte (`approx`, `nsolve`, Winkelfunktionen) profitieren vom Koprozessor.
 
 Grenzen der jetzigen Fassung: `solve` löst lineare und quadratische Gleichungen (auch komplex), Polynome mit rationalen Nullstellen, lineare Gleichungen mit symbolischen Koeffizienten (`solve(a*x+b=0,x)`) und lineare Systeme über `solve([g1;g2],[x,y])`; nichtlineare Systeme lehnt es ab. `factor` für eine Variable; Matrizen bis 6×6 mit `+`, `-`, `*`, `^`, `det`, `inv`, `trans`, `rref`, `rank`, `lsolve`, `charpoly`, `eigenvals` und `eigenvect` (Eigenwerte exakt bei rationalen bzw. quadratischen Polynomen). Integration mit partieller Integration für Polynom mal `sin`/`cos`/`exp`/`ln` und für `atan`/`asin`/`acos`, aber ohne Substitutionsverfahren wie `exp(x^2)`. `laplace` deckt Konstanten, `t^n`, `exp`, `sin`/`cos` und Produkte daraus ab; `ilaplace` rationale Funktionen mit rationalen Polen und einem quadratischen Rest, dazu Polynomanteile (Delta-Impulse bis `delta''`) und Zeitverschiebungen `exp(-a*s)` (Sprungfunktion `step`).
 

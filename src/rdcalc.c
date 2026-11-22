@@ -238,8 +238,9 @@ static const char *blbl[NB] = {
 #define B_RB 50
 #define B_MTX 53
 #define NH 6
-static char hist[NH][160], line[64], status[80], expr[64];
-static char lastin[64];
+#define LN 160                             /* Eingabezeile: 6x6-Matrizen brauchen gut 100 Zeichen */
+static char hist[NH][160], line[LN], status[80], expr[LN];
+static char lastin[LN];
 static int nh, lh, dx, dy, dw, dh, bx0, by0, bw, bstep, quit, shot;
 static double xlo = -10, xhi = 10, ylo, yhi; static int yfix;
 
@@ -249,8 +250,9 @@ static const char *lbl(int i) { return i == B_DEG ? (deg ? "Deg" : "Rad") : blbl
 
 static void draw_disp(void)
 {
-    int i, y, n = nh < lh ? nh : lh, len;
-    char b[90];
+    int i, y, n = nh < lh ? nh : lh, len, vis;
+    char b[LN + 8];
+    const char *lp;
     mouse_hide();
     gfx_fill(dx + 1, dy + 1, dw - 2, dh - 2, 1);
     for (i = 0; i < n; i++) {                 /* aelteste oben, Eingabe und Ergebnis je Zeile */
@@ -266,7 +268,10 @@ static void draw_disp(void)
     }
     y = dy + dh - gfx_fh - 4;
     gfx_fill(dx + 1, y - 2, dw - 2, 1, 0);
-    sprintf(b, "> %s_", line);
+    vis = (dw - 12) / 8 - 3;                 /* lange Eingabe: das Ende bleibt sichtbar */
+    lp = line; len = (int)strlen(line);
+    if (len > vis) { lp = line + len - (vis - 1); sprintf(b, "<%s_", lp); }
+    else sprintf(b, "> %s_", lp);
     gfx_text(dx + 6, y, b, 0);
     mouse_show();
 }
@@ -338,7 +343,7 @@ static void calc(void)
 
 static void insert(const char *s)
 {
-    if (strlen(line) + strlen(s) < 56) strcat(line, s);
+    if (strlen(line) + strlen(s) < LN - 1) strcat(line, s);
 }
 
 /* ---------------- Kurve ---------------- */
@@ -613,7 +618,7 @@ static void key(unsigned k)
     if (c == 13) { press(B_EQ); return; }
     if (c == 27) { if (line[0]) press(B_C); else quit = 1; return; }
     if (c == 8) { press(B_BS); return; }
-    if (c >= ' ' && c < 127 && strchr("0123456789.+-*/:^(),=;[] abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", c)) {
+    if (c >= ' ' && c < 127 && strchr("0123456789.+-*/:^(),=;[]!' abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", c)) {
         s[0] = (char)c; s[1] = 0; insert(s); status[0] = 0; draw_disp(); draw_status();
     }
 }
@@ -634,17 +639,17 @@ static void sta_save(void)
 {
     FILE *f = fopen(stafn, "wb");
     if (!f) return;
-    fputs("RDC2", f); STA_FELDER(STA_W) fclose(f);
+    fputs("RDC3", f); STA_FELDER(STA_W) fclose(f);
 }
 static void sta_load(void)
 {
     char m[4];
     FILE *f = fopen(stafn, "rb");
     if (!f) return;
-    if (fread(m, 4, 1, f) == 1 && !memcmp(m, "RDC2", 4)) { STA_FELDER(STA_R) }
+    if (fread(m, 4, 1, f) == 1 && !memcmp(m, "RDC3", 4)) { STA_FELDER(STA_R) }
     fclose(f);
     if (nh < 0 || xhi <= xlo) { nh = 0; xlo = -10; xhi = 10; yfix = 0; }   /* kaputte Datei */
-    line[63] = lastin[63] = 0;
+    line[LN - 1] = lastin[LN - 1] = 0;
     for (m[0] = 0; m[0] < NH; m[0]++) hist[m[0]][159] = 0;
 }
 
